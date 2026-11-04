@@ -1,0 +1,31 @@
+[
+  {
+    "urn": "urn:li:activity:7300000000000000001",
+    "url": "https://www.linkedin.com/posts/acme_hiring-react-activity-7300000000000000001?utm_source=share",
+    "text": "🚀 We're hiring a React Developer (Lahore, onsite)\n\nHiring React dev, send CV to hr@acme.pk or WhatsApp 0300-1234567, apply: https://forms.gle/abc123",
+    "author": { "firstName": "Sara", "lastName": "Khan", "companyName": "Acme Pvt Ltd" },
+    "postedAtISO": "2026-10-05T09:00:00.000Z"
+  },
+  {
+    "urn": "urn:li:activity:7300000000000000002",
+    "url": "https://www.linkedin.com/posts/devstudio_jobs-activity-7300000000000000002",
+    "text": "Looking for a Next.js Developer - Full time, remote. Interested candidates share your resume at careers [at] devstudio [dot] io",
+    "author": { "name": "DevStudio" },
+    "postedAtTimestamp": 1791200000000
+  },
+  {
+    "urn": "urn:li:activity:7300000000000000003",
+    "url": "https://www.linkedin.com/posts/someone_motivation-activity-7300000000000000003",
+    "text": "Grateful for 5 amazing years at my company! Thanks to my team for all the support.",
+    "author": { "name": "Ali" },
+    "postedAtISO": "2026-10-05T10:00:00.000Z"
+  },
+  {
+    "urn": "urn:li:activity:7300000000000000004",
+    "url": "https://www.linkedin.com/posts/oldco_hiring-activity-7300000000000000004",
+    "text": "Hiring PHP developer, email jobs@oldco.pk",
+    "author": { "name": "OldCo" },
+    "postedAtISO": "2026-08-01T10:00:00.000Z"
+  },
+  { "urn": "urn:li:activity:7300000000000000005", "url": "https://www.linkedin.com/posts/x" }
+]

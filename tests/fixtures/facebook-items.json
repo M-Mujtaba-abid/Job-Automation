@@ -1,0 +1,17 @@
+[
+  {
+    "postId": "1234567890",
+    "facebookUrl": "https://www.facebook.com/groups/pkdevjobs/posts/1234567890/",
+    "text": "Vacancy for MERN Stack Developer in Karachi. Internship available too.\nContact on WhatsApp: +92 321 7654321\nForm: https://docs.google.com/forms/d/e/1FAIpQLSf_xyz/viewform?usp=sf_link",
+    "user": { "name": "Bilal Ahmed" },
+    "groupName": "Pakistan Developer Jobs",
+    "time": "2026-10-04T12:00:00+05:00"
+  },
+  {
+    "postId": "1234567891",
+    "facebookUrl": "https://www.facebook.com/groups/pkdevjobs/posts/1234567891/",
+    "text": "Anyone know a good laptop repair shop in Lahore?",
+    "user": { "name": "Random Person" },
+    "time": "2026-10-04T13:00:00+05:00"
+  }
+]
