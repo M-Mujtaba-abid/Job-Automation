@@ -4,7 +4,10 @@ import { uuidv7 } from "../../lib/uuid"; // relative: drizzle-kit loads schema f
 /** All v2 tables live in Postgres schema "app"; v1 stays in "public" (ADR-024). */
 export const app = pgSchema("app");
 
-export const id = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
+export const id = () =>
+  uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7());
 export const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 /** precision 3 (ms) so the value round-trips exactly through JS Date: needed for optimistic-concurrency checks. */
 export const updatedAt = () =>

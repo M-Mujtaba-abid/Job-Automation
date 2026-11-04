@@ -36,6 +36,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Formatting (v2 code)
+        run: npm run format:check
+
       - name: Typecheck (all code)
         run: npm run typecheck
 

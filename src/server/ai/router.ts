@@ -16,7 +16,14 @@ export type JsonTask<S extends z.ZodType> = {
 export type RunOptions = {
   providers: ReadonlyMap<ProviderId, LlmProvider>;
   chain: readonly ChainEntry[];
-  onUsage?: (u: { task: string; version: string; provider: ProviderId; model: string; usage: Usage; ok: boolean }) => void;
+  onUsage?: (u: {
+    task: string;
+    version: string;
+    provider: ProviderId;
+    model: string;
+    usage: Usage;
+    ok: boolean;
+  }) => void;
 };
 
 function jsonSchemaFor(schema: z.ZodType): Record<string, unknown> {
@@ -38,7 +45,11 @@ function parseJson(raw: string): unknown {
  * personal data is never sent to a provider with allowsPersonalData = false.
  * Output is always validated with the task's Zod schema; the first valid answer wins.
  */
-export async function runJsonTask<S extends z.ZodType>(task: JsonTask<S>, user: string, opts: RunOptions): Promise<z.infer<S>> {
+export async function runJsonTask<S extends z.ZodType>(
+  task: JsonTask<S>,
+  user: string,
+  opts: RunOptions,
+): Promise<z.infer<S>> {
   const allowed = opts.chain.filter((c) => {
     const p = opts.providers.get(c.provider);
     return p && (task.dataClass === "public" || p.allowsPersonalData);
@@ -63,7 +74,14 @@ export async function runJsonTask<S extends z.ZodType>(task: JsonTask<S>, user: 
         maxOutputTokens: task.maxOutputTokens,
       });
       const parsed = task.schema.safeParse(parseJson(res.raw));
-      opts.onUsage?.({ task: task.id, version: task.version, provider: entry.provider, model: entry.model, usage: res.usage, ok: parsed.success });
+      opts.onUsage?.({
+        task: task.id,
+        version: task.version,
+        provider: entry.provider,
+        model: entry.model,
+        usage: res.usage,
+        ok: parsed.success,
+      });
       if (parsed.success) return parsed.data;
       failures.push(`${entry.provider}: invalid output`);
     } catch (err) {

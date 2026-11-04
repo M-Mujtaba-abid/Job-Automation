@@ -13,7 +13,9 @@ const PREFIX = "itest:";
 const q = createPgQueue();
 
 async function cleanup() {
-  await db().delete(backgroundJobs).where(like(backgroundJobs.queue, `${PREFIX}%`));
+  await db()
+    .delete(backgroundJobs)
+    .where(like(backgroundJobs.queue, `${PREFIX}%`));
 }
 
 describe.skipIf(!hasDb)("Postgres JobQueue", () => {
@@ -22,7 +24,12 @@ describe.skipIf(!hasDb)("Postgres JobQueue", () => {
     const [row] = await db()
       .select({ n: sql<number>`count(*)::int` })
       .from(backgroundJobs)
-      .where(and(notLike(backgroundJobs.queue, `${PREFIX}%`), sql`${backgroundJobs.status} IN ('QUEUED','FAILED','RUNNING')`));
+      .where(
+        and(
+          notLike(backgroundJobs.queue, `${PREFIX}%`),
+          sql`${backgroundJobs.status} IN ('QUEUED','FAILED','RUNNING')`,
+        ),
+      );
     if ((row?.n ?? 0) > 0) throw new Error("Real background jobs are pending; refusing to run queue integration tests");
     await cleanup();
   });
@@ -76,7 +83,10 @@ describe.skipIf(!hasDb)("Postgres JobQueue", () => {
     expect(retrying!.notBefore.getTime()).toBeGreaterThan(Date.now());
     expect(await q.claimNext("w")).toBeNull(); // backoff not elapsed
 
-    await db().update(backgroundJobs).set({ notBefore: new Date(Date.now() - 1000) }).where(eq(backgroundJobs.id, first!.id));
+    await db()
+      .update(backgroundJobs)
+      .set({ notBefore: sql`now() - interval '1 minute'` })
+      .where(eq(backgroundJobs.id, first!.id));
     const second = await q.claimNext("w");
     expect(second?.attempts).toBe(2);
     expect(await q.fail(second!, "boom again", { retryable: true })).toBe("dead");
@@ -92,9 +102,15 @@ describe.skipIf(!hasDb)("Postgres JobQueue", () => {
     const [deferred] = await db().select().from(backgroundJobs).where(eq(backgroundJobs.id, job!.id));
     expect(deferred).toMatchObject({ status: "QUEUED", attempts: 0 });
 
-    await db().update(backgroundJobs).set({ notBefore: new Date(Date.now() - 1000) }).where(eq(backgroundJobs.id, job!.id));
+    await db()
+      .update(backgroundJobs)
+      .set({ notBefore: sql`now() - interval '1 minute'` })
+      .where(eq(backgroundJobs.id, job!.id));
     const again = await q.claimNext("w");
-    await db().update(backgroundJobs).set({ lockedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(backgroundJobs.id, again!.id));
+    await db()
+      .update(backgroundJobs)
+      .set({ lockedAt: sql`now() - interval '10 minutes'` })
+      .where(eq(backgroundJobs.id, again!.id));
     expect(await q.releaseStale(5 * 60_000)).toBeGreaterThanOrEqual(1);
     const [released] = await db().select().from(backgroundJobs).where(eq(backgroundJobs.id, again!.id));
     expect(released).toMatchObject({ status: "QUEUED", lockedBy: null });

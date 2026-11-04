@@ -23,10 +23,14 @@ export type FailOutcome = "retry" | "dead";
 
 /** Profile-independent queue seam (SYSTEM_ARCHITECTURE §8.4). Postgres now; BullMQ adapter later. */
 export interface JobQueue {
-  enqueue(queue: string, payload: Record<string, unknown>, opts?: EnqueueOptions): Promise<{ id: string | null; deduped: boolean }>;
+  enqueue(
+    queue: string,
+    payload: Record<string, unknown>,
+    opts?: EnqueueOptions,
+  ): Promise<{ id: string | null; deduped: boolean }>;
   claimNext(workerId: string): Promise<ClaimedJob | null>;
   complete(jobId: string): Promise<void>;
-  fail(job: ClaimedJob, error: string, opts: { retryable: boolean; now?: Date }): Promise<FailOutcome>;
+  fail(job: ClaimedJob, error: string, opts: { retryable: boolean }): Promise<FailOutcome>;
   /** Re-queue without counting the attempt (e.g. free AI quota exhausted until `until`). */
   defer(job: ClaimedJob, until: Date): Promise<void>;
   /** RUNNING jobs locked longer than `olderThanMs` (crashed runs) go back to the queue. */

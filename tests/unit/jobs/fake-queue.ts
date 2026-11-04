@@ -23,9 +23,16 @@ export function createFakeQueue(clock: () => number = Date.now) {
       if (opts.dedupeKey && rows.some((r) => r.dedupeKey === opts.dedupeKey)) return { id: null, deduped: true };
       const id = `job-${++seq}`;
       rows.push({
-        id, queue: name, payload, status: "QUEUED", priority: opts.priority ?? 100, attempts: 0,
-        maxAttempts: opts.maxAttempts ?? 5, notBefore: opts.notBefore?.getTime() ?? clock(),
-        dedupeKey: opts.dedupeKey ?? null, lastError: null,
+        id,
+        queue: name,
+        payload,
+        status: "QUEUED",
+        priority: opts.priority ?? 100,
+        attempts: 0,
+        maxAttempts: opts.maxAttempts ?? 5,
+        notBefore: opts.notBefore?.getTime() ?? clock(),
+        dedupeKey: opts.dedupeKey ?? null,
+        lastError: null,
       });
       return { id, deduped: false };
     },
@@ -36,7 +43,13 @@ export function createFakeQueue(clock: () => number = Date.now) {
       if (!due) return null;
       due.status = "RUNNING";
       due.attempts++;
-      return { id: due.id, queue: due.queue, payload: due.payload, attempts: due.attempts, maxAttempts: due.maxAttempts };
+      return {
+        id: due.id,
+        queue: due.queue,
+        payload: due.payload,
+        attempts: due.attempts,
+        maxAttempts: due.maxAttempts,
+      };
     },
     async complete(id) {
       const r = find(id);

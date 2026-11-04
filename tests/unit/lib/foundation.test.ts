@@ -30,8 +30,13 @@ describe("retryDelayMs", () => {
 
 describe("toActionError", () => {
   it("passes AppError codes and messages through", () => {
-    expect(toActionError(new AppError("NOT_FOUND", "Job not found"))).toEqual({ code: "NOT_FOUND", message: "Job not found" });
-    expect(toActionError(new AppError("RATE_LIMITED", "Slow down", { retryAfterSec: 30 }))).toMatchObject({ retryAfterSec: 30 });
+    expect(toActionError(new AppError("NOT_FOUND", "Job not found"))).toEqual({
+      code: "NOT_FOUND",
+      message: "Job not found",
+    });
+    expect(toActionError(new AppError("RATE_LIMITED", "Slow down", { retryAfterSec: 30 }))).toMatchObject({
+      retryAfterSec: 30,
+    });
   });
   it("maps Zod errors to VALIDATION_FAILED with field errors", () => {
     const r = z.object({ email: z.email() }).safeParse({ email: "nope" });

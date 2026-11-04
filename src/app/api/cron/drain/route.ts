@@ -17,7 +17,10 @@ const noStore = { "Cache-Control": "no-store" };
  */
 export async function GET(req: Request): Promise<Response> {
   if (!isAuthorizedCron(req)) {
-    return Response.json({ error: { code: "UNAUTHENTICATED", message: "Unauthorized" } }, { status: 401, headers: noStore });
+    return Response.json(
+      { error: { code: "UNAUTHENTICATED", message: "Unauthorized" } },
+      { status: 401, headers: noStore },
+    );
   }
   try {
     await scheduleDailyMaintenance();

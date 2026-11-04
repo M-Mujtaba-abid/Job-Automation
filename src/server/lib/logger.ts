@@ -9,13 +9,29 @@ type Level = "debug" | "info" | "warn" | "error";
 const LEVELS: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
 /** Keys whose values are never logged, at any depth (case-insensitive). */
-const REDACT_KEYS = new Set(
-  [
-    "email", "phone", "password", "token", "accesstoken", "refreshtoken", "idtoken",
-    "authorization", "cookie", "secret", "apikey", "extractedtext", "bodytext", "body",
-    "coverletter", "answers", "resume", "data", "payload", "prompt", "completion",
-  ],
-);
+const REDACT_KEYS = new Set([
+  "email",
+  "phone",
+  "password",
+  "token",
+  "accesstoken",
+  "refreshtoken",
+  "idtoken",
+  "authorization",
+  "cookie",
+  "secret",
+  "apikey",
+  "extractedtext",
+  "bodytext",
+  "body",
+  "coverletter",
+  "answers",
+  "resume",
+  "data",
+  "payload",
+  "prompt",
+  "completion",
+]);
 
 const MAX_DEPTH = 6;
 

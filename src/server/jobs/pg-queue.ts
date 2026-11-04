@@ -7,10 +7,16 @@ import type { EnqueueOptions, FailOutcome, JobQueue } from "./types";
 
 const ERROR_MAX = 2_000;
 
+/** DB-clock timestamp `ms` milliseconds ago. */
+const ago = (ms: number) => sql`now() - ${Math.round(ms)} * interval '1 millisecond'`;
+
 /**
  * Postgres-backed JobQueue (ADR-023). Claiming uses FOR UPDATE SKIP LOCKED so
  * concurrent drainers never run the same job. Pass `tx` to enqueue inside a caller's
  * transaction: the queue row then commits atomically with the state change (outbox).
+ *
+ * All timing uses the DATABASE clock (now()), never the app server's clock: app and DB clocks
+ * drift (measured ~0.6 s locally), and a JS-stamped not_before can land in the DB's future.
  */
 export function createPgQueue(conn: () => DbOrTx = db): JobQueue {
   return {
@@ -23,7 +29,7 @@ export function createPgQueue(conn: () => DbOrTx = db): JobQueue {
           dedupeKey: opts.dedupeKey ?? null,
           priority: opts.priority ?? 100,
           maxAttempts: opts.maxAttempts ?? 5,
-          notBefore: opts.notBefore ?? new Date(),
+          ...(opts.notBefore && { notBefore: opts.notBefore }), // default: DB now()
         })
         .onConflictDoNothing({ target: backgroundJobs.dedupeKey })
         .returning({ id: backgroundJobs.id });
@@ -58,11 +64,18 @@ export function createPgQueue(conn: () => DbOrTx = db): JobQueue {
     async complete(jobId) {
       await conn()
         .update(backgroundJobs)
-        .set({ status: "DONE", finishedAt: new Date(), lockedAt: null, lockedBy: null, dedupeKey: null, lastError: null })
+        .set({
+          status: "DONE",
+          finishedAt: sql`now()`,
+          lockedAt: null,
+          lockedBy: null,
+          dedupeKey: null,
+          lastError: null,
+        })
         .where(eq(backgroundJobs.id, jobId));
     },
 
-    async fail(job, error, { retryable, now = new Date() }): Promise<FailOutcome> {
+    async fail(job, error, { retryable }): Promise<FailOutcome> {
       const outcome: FailOutcome = retryable && job.attempts < job.maxAttempts ? "retry" : "dead";
       await conn()
         .update(backgroundJobs)
@@ -70,14 +83,14 @@ export function createPgQueue(conn: () => DbOrTx = db): JobQueue {
           outcome === "retry"
             ? {
                 status: "FAILED",
-                notBefore: new Date(now.getTime() + retryDelayMs(job.attempts)),
+                notBefore: sql`now() + ${retryDelayMs(job.attempts)} * interval '1 millisecond'`,
                 lockedAt: null,
                 lockedBy: null,
                 lastError: error.slice(0, ERROR_MAX),
               }
             : {
                 status: "DEAD",
-                finishedAt: now,
+                finishedAt: sql`now()`,
                 lockedAt: null,
                 lockedBy: null,
                 dedupeKey: null,
@@ -102,24 +115,22 @@ export function createPgQueue(conn: () => DbOrTx = db): JobQueue {
     },
 
     async releaseStale(olderThanMs) {
-      const cutoff = new Date(Date.now() - olderThanMs);
       const rows = await conn()
         .update(backgroundJobs)
         .set({ status: "QUEUED", lockedAt: null, lockedBy: null })
-        .where(and(eq(backgroundJobs.status, "RUNNING"), lt(backgroundJobs.lockedAt, cutoff)))
+        .where(and(eq(backgroundJobs.status, "RUNNING"), lt(backgroundJobs.lockedAt, ago(olderThanMs))))
         .returning({ id: backgroundJobs.id });
       return rows.length;
     },
 
     async pruneFinished({ doneOlderThanMs, deadOlderThanMs }) {
-      const now = Date.now();
       const done = await conn()
         .delete(backgroundJobs)
-        .where(and(eq(backgroundJobs.status, "DONE"), lt(backgroundJobs.finishedAt, new Date(now - doneOlderThanMs))))
+        .where(and(eq(backgroundJobs.status, "DONE"), lt(backgroundJobs.finishedAt, ago(doneOlderThanMs))))
         .returning({ id: backgroundJobs.id });
       const dead = await conn()
         .delete(backgroundJobs)
-        .where(and(eq(backgroundJobs.status, "DEAD"), lt(backgroundJobs.finishedAt, new Date(now - deadOlderThanMs))))
+        .where(and(eq(backgroundJobs.status, "DEAD"), lt(backgroundJobs.finishedAt, ago(deadOlderThanMs))))
         .returning({ id: backgroundJobs.id });
       return done.length + dead.length;
     },
@@ -128,7 +139,7 @@ export function createPgQueue(conn: () => DbOrTx = db): JobQueue {
       const [row] = await conn()
         .select({ n: count() })
         .from(backgroundJobs)
-        .where(and(inArray(backgroundJobs.status, ["QUEUED", "FAILED"]), lte(backgroundJobs.notBefore, new Date())));
+        .where(and(inArray(backgroundJobs.status, ["QUEUED", "FAILED"]), lte(backgroundJobs.notBefore, sql`now()`)));
       return row?.n ?? 0;
     },
   };

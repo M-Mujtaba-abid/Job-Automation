@@ -8,6 +8,14 @@
     "noImplicitOverride": true,
     "incremental": false
   },
-  "include": ["next-env.d.ts", "src/server/**/*.ts", "src/lib/**/*.ts", "src/features/**/*.ts", "src/features/**/*.tsx", "tests/unit/**/*.ts", "tests/stubs/**/*.ts"],
+  "include": [
+    "next-env.d.ts",
+    "src/server/**/*.ts",
+    "src/lib/**/*.ts",
+    "src/features/**/*.ts",
+    "src/features/**/*.tsx",
+    "tests/unit/**/*.ts",
+    "tests/stubs/**/*.ts"
+  ],
   "exclude": ["node_modules"]
 }

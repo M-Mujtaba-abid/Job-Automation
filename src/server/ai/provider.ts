@@ -55,13 +55,19 @@ export class AiError extends Error {
     super(message);
   }
   get retryable(): boolean {
-    return this.kind === "RATE_LIMITED" || this.kind === "UNAVAILABLE" || this.kind === "INVALID_OUTPUT" || this.kind === "EXHAUSTED";
+    return (
+      this.kind === "RATE_LIMITED" ||
+      this.kind === "UNAVAILABLE" ||
+      this.kind === "INVALID_OUTPUT" ||
+      this.kind === "EXHAUSTED"
+    );
   }
 }
 
 /** Maps an SDK error carrying an HTTP `status` (both Gemini and Groq SDKs expose one) to AiError. */
 export function aiErrorFromStatus(provider: ProviderId, err: unknown): AiError {
-  const status = typeof err === "object" && err !== null && "status" in err ? Number((err as { status: unknown }).status) : NaN;
+  const status =
+    typeof err === "object" && err !== null && "status" in err ? Number((err as { status: unknown }).status) : NaN;
   const msg = `${provider}: ${err instanceof Error ? err.message.slice(0, 300) : "request failed"}`;
   if (status === 429) return new AiError("RATE_LIMITED", msg, 60_000);
   if (status === 400 || status === 401 || status === 403 || status === 404) return new AiError("CONFIG", msg);
@@ -70,9 +76,11 @@ export function aiErrorFromStatus(provider: ProviderId, err: unknown): AiError {
 
 /** Validates count, dimension and finiteness, then L2-normalises (harmless if already unit length). */
 export function normaliseVectors(vectors: number[][], expectedCount: number, dimensions: number): number[][] {
-  if (vectors.length !== expectedCount) throw new AiError("INVALID_OUTPUT", `expected ${expectedCount} vectors, got ${vectors.length}`);
+  if (vectors.length !== expectedCount)
+    throw new AiError("INVALID_OUTPUT", `expected ${expectedCount} vectors, got ${vectors.length}`);
   return vectors.map((v) => {
-    if (v.length !== dimensions) throw new AiError("INVALID_OUTPUT", `expected ${dimensions} dimensions, got ${v.length}`);
+    if (v.length !== dimensions)
+      throw new AiError("INVALID_OUTPUT", `expected ${dimensions} dimensions, got ${v.length}`);
     let sum = 0;
     for (const x of v) {
       if (!Number.isFinite(x)) throw new AiError("INVALID_OUTPUT", "non-finite value in embedding");

@@ -31,7 +31,15 @@ export async function drain(opts: DrainOptions): Promise<DrainSummary> {
   const now = opts.now ?? Date.now;
   const started = now();
   const deadline = started + opts.budgetMs;
-  const s: DrainSummary = { processed: 0, succeeded: 0, retried: 0, dead: 0, deferred: 0, stoppedBy: "empty", durationMs: 0 };
+  const s: DrainSummary = {
+    processed: 0,
+    succeeded: 0,
+    retried: 0,
+    dead: 0,
+    deferred: 0,
+    stoppedBy: "empty",
+    durationMs: 0,
+  };
 
   while (true) {
     if (now() >= deadline) {
@@ -60,7 +68,13 @@ export async function drain(opts: DrainOptions): Promise<DrainSummary> {
 
     const jobStarted = now();
     try {
-      await handler.handle(parsed.data, { jobId: job.id, attempt: job.attempts, deadline, logger: log, queue: opts.queue });
+      await handler.handle(parsed.data, {
+        jobId: job.id,
+        attempt: job.attempts,
+        deadline,
+        logger: log,
+        queue: opts.queue,
+      });
       await opts.queue.complete(job.id);
       s.succeeded++;
       log.info({ durationMs: now() - jobStarted }, "job.done");

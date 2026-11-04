@@ -6,7 +6,12 @@ import { runJsonTask, type JsonTask } from "@/server/ai/router";
 
 const schema = z.object({ title: z.string(), seniority: z.enum(["JUNIOR", "MID", "SENIOR"]).nullable() });
 const task = (dataClass: "public" | "personal"): JsonTask<typeof schema> => ({
-  id: "test.extract", version: "v1", dataClass, system: "extract", schema, maxOutputTokens: 200,
+  id: "test.extract",
+  version: "v1",
+  dataClass,
+  system: "extract",
+  schema,
+  maxOutputTokens: 200,
 });
 const ok = JSON.stringify({ title: "Frontend Engineer", seniority: "MID" });
 const providers = (...ps: LlmProvider[]) => new Map<ProviderId, LlmProvider>(ps.map((p) => [p.id, p]));
@@ -17,7 +22,10 @@ describe("runJsonTask routing policy", () => {
     const groq = createFakeLlm(() => ok, { id: "groq", allowsPersonalData: true });
     const out = await runJsonTask(task("personal"), "resume text", {
       providers: providers(gemini, groq),
-      chain: [{ provider: "gemini", model: "g" }, { provider: "groq", model: "q" }],
+      chain: [
+        { provider: "gemini", model: "g" },
+        { provider: "groq", model: "q" },
+      ],
     });
     expect(out.title).toBe("Frontend Engineer");
     expect(gemini.calls).toHaveLength(0);
@@ -44,15 +52,22 @@ describe("runJsonTask routing policy", () => {
 describe("runJsonTask fallback", () => {
   it("falls back on rate limit and on invalid output, validating with Zod", async () => {
     const limited: LlmProvider = {
-      id: "gemini", allowsPersonalData: false,
-      generateJson: async () => { throw new AiError("RATE_LIMITED", "429", 30_000); },
+      id: "gemini",
+      allowsPersonalData: false,
+      generateJson: async () => {
+        throw new AiError("RATE_LIMITED", "429", 30_000);
+      },
     };
     const garbage = createFakeLlm(() => '{"title": 42}', { id: "fake" });
     const good = createFakeLlm(() => "```json\n" + ok + "\n```", { id: "groq" });
     const usage: string[] = [];
     const out = await runJsonTask(task("public"), "job", {
       providers: providers(limited, garbage, good),
-      chain: [{ provider: "gemini", model: "a" }, { provider: "fake", model: "b" }, { provider: "groq", model: "c" }],
+      chain: [
+        { provider: "gemini", model: "a" },
+        { provider: "fake", model: "b" },
+        { provider: "groq", model: "c" },
+      ],
       onUsage: (u) => usage.push(`${u.provider}:${u.ok}`),
     });
     expect(out).toEqual({ title: "Frontend Engineer", seniority: "MID" });
@@ -61,11 +76,18 @@ describe("runJsonTask fallback", () => {
 
   it("reports EXHAUSTED with the shortest retry hint when every provider fails", async () => {
     const limited = (id: ProviderId, ms: number): LlmProvider => ({
-      id, allowsPersonalData: true, generateJson: async () => { throw new AiError("RATE_LIMITED", "429", ms); },
+      id,
+      allowsPersonalData: true,
+      generateJson: async () => {
+        throw new AiError("RATE_LIMITED", "429", ms);
+      },
     });
     const err = await runJsonTask(task("public"), "x", {
       providers: providers(limited("gemini", 60_000), limited("groq", 5_000)),
-      chain: [{ provider: "gemini", model: "a" }, { provider: "groq", model: "b" }],
+      chain: [
+        { provider: "gemini", model: "a" },
+        { provider: "groq", model: "b" },
+      ],
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(AiError);
     expect(err).toMatchObject({ kind: "EXHAUSTED", retryAfterMs: 5_000 });
@@ -73,12 +95,21 @@ describe("runJsonTask fallback", () => {
 
   it("fails loudly on configuration errors instead of masking them with fallbacks", async () => {
     const broken: LlmProvider = {
-      id: "gemini", allowsPersonalData: false,
-      generateJson: async () => { throw new AiError("CONFIG", "401 bad key"); },
+      id: "gemini",
+      allowsPersonalData: false,
+      generateJson: async () => {
+        throw new AiError("CONFIG", "401 bad key");
+      },
     };
     const good = createFakeLlm(() => ok, { id: "groq" });
     await expect(
-      runJsonTask(task("public"), "x", { providers: providers(broken, good), chain: [{ provider: "gemini", model: "a" }, { provider: "groq", model: "b" }] }),
+      runJsonTask(task("public"), "x", {
+        providers: providers(broken, good),
+        chain: [
+          { provider: "gemini", model: "a" },
+          { provider: "groq", model: "b" },
+        ],
+      }),
     ).rejects.toMatchObject({ kind: "CONFIG" });
     expect(good.calls).toHaveLength(0);
   });

@@ -66,7 +66,11 @@ export function createGeminiEmbeddings(apiKey: string, model: string, dimensions
           contents: texts.map((t) => ({ parts: [{ text: prefix(kind, t) }] })),
           config: { outputDimensionality: dimensions },
         });
-        return normaliseVectors((res.embeddings ?? []).map((e) => e.values ?? []), texts.length, dimensions);
+        return normaliseVectors(
+          (res.embeddings ?? []).map((e) => e.values ?? []),
+          texts.length,
+          dimensions,
+        );
       } catch (err) {
         if (err instanceof Error && err.name === "AiError") throw err;
         throw aiErrorFromStatus("gemini", err);

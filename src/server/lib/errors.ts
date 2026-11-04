@@ -45,8 +45,8 @@ export function toActionError(err: unknown): ActionError {
   }
   if (err instanceof z.ZodError) {
     const fieldErrors = Object.fromEntries(
-      Object.entries(z.flattenError(err).fieldErrors).filter(
-        (entry): entry is [string, string[]] => Array.isArray(entry[1]),
+      Object.entries(z.flattenError(err).fieldErrors).filter((entry): entry is [string, string[]] =>
+        Array.isArray(entry[1]),
       ),
     );
     return { code: "VALIDATION_FAILED", message: "Invalid input", fieldErrors };

@@ -1,0 +1,29 @@
+# Local development database (zero-cost profile: Postgres + pgvector only, ADR-023).
+# Matches Neon's major version (Postgres 18, pgvector 0.8.x).
+#
+#   docker compose up -d db
+#   TEST_DATABASE_URL=postgresql://jobfinder:jobfinder@localhost:5433/jobfinder
+#
+# Then apply migrations to it with:
+#   DATABASE_URL_UNPOOLED=$TEST_DATABASE_URL npm run db:migrate
+# and run `npm run test:integration` (it prefers TEST_DATABASE_URL over DATABASE_URL).
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    container_name: jobfinder-db
+    environment:
+      POSTGRES_USER: jobfinder
+      POSTGRES_PASSWORD: jobfinder # local-only throwaway credentials
+      POSTGRES_DB: jobfinder
+    ports:
+      - "127.0.0.1:5433:5432" # bound to localhost only; 5433 avoids clashing with a local Postgres
+    volumes:
+      - jobfinder-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobfinder -d jobfinder"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  jobfinder-db-data:

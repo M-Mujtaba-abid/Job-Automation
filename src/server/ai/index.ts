@@ -35,7 +35,10 @@ export function llmProviders(): ReadonlyMap<ProviderId, LlmProvider> {
   const env = serverEnv();
   const map = new Map<ProviderId, LlmProvider>();
   if (env.LLM_PRIMARY_PROVIDER === "fake") {
-    map.set("fake", createFakeLlm(() => "{}"));
+    map.set(
+      "fake",
+      createFakeLlm(() => "{}"),
+    );
   } else {
     if (env.GEMINI_API_KEY) map.set("gemini", createGeminiLlm(env.GEMINI_API_KEY));
     if (env.GROQ_API_KEY) map.set("groq", createGroqLlm(env.GROQ_API_KEY));

@@ -13,7 +13,14 @@ function handler(queue: string, fn: (p: { n: number }) => Promise<void> | void):
 }
 
 function run(q: ReturnType<typeof createFakeQueue>["queue"], hs: JobHandler[], budgetMs = 10_000, now?: () => number) {
-  return drain({ queue: q, handlers: new Map(hs.map((h) => [h.queue, h])), workerId: "test", budgetMs, logger: silent, ...(now && { now }) });
+  return drain({
+    queue: q,
+    handlers: new Map(hs.map((h) => [h.queue, h])),
+    workerId: "test",
+    budgetMs,
+    logger: silent,
+    ...(now && { now }),
+  });
 }
 
 describe("drain", () => {
@@ -32,7 +39,11 @@ describe("drain", () => {
     const { queue, rows } = createFakeQueue();
     await queue.enqueue("work", { n: 1 }, { maxAttempts: 1 });
     await queue.enqueue("work", { n: 2 }, { maxAttempts: 3 });
-    const s = await run(queue, [handler("work", () => { throw new Error("boom"); })]);
+    const s = await run(queue, [
+      handler("work", () => {
+        throw new Error("boom");
+      }),
+    ]);
     expect(s).toMatchObject({ processed: 2, dead: 1, retried: 1 });
     expect(rows.map((r) => r.status)).toEqual(["DEAD", "FAILED"]);
     expect(rows[1]?.lastError).toBe("boom");
@@ -41,7 +52,11 @@ describe("drain", () => {
   it("does not retry NonRetryableError", async () => {
     const { queue, rows } = createFakeQueue();
     await queue.enqueue("work", { n: 1 }, { maxAttempts: 5 });
-    const s = await run(queue, [handler("work", () => { throw new NonRetryableError("bad"); })]);
+    const s = await run(queue, [
+      handler("work", () => {
+        throw new NonRetryableError("bad");
+      }),
+    ]);
     expect(s.dead).toBe(1);
     expect(rows[0]?.status).toBe("DEAD");
   });
@@ -50,7 +65,11 @@ describe("drain", () => {
     const { queue, rows } = createFakeQueue();
     await queue.enqueue("work", { n: 1 });
     const until = new Date(Date.now() + 3_600_000);
-    const s = await run(queue, [handler("work", () => { throw new DeferError(until, "quota"); })]);
+    const s = await run(queue, [
+      handler("work", () => {
+        throw new DeferError(until, "quota");
+      }),
+    ]);
     expect(s.deferred).toBe(1);
     expect(rows[0]).toMatchObject({ status: "QUEUED", attempts: 0, notBefore: until.getTime() });
   });
@@ -69,7 +88,16 @@ describe("drain", () => {
     const clock = () => t;
     const { queue, rows } = createFakeQueue(clock);
     for (let i = 0; i < 5; i++) await queue.enqueue("work", { n: i });
-    const s = await run(queue, [handler("work", () => { t += 400; })], 1_000, clock);
+    const s = await run(
+      queue,
+      [
+        handler("work", () => {
+          t += 400;
+        }),
+      ],
+      1_000,
+      clock,
+    );
     expect(s.stoppedBy).toBe("budget");
     expect(s.succeeded).toBe(3);
     expect(rows.filter((r) => r.status === "QUEUED")).toHaveLength(2);
