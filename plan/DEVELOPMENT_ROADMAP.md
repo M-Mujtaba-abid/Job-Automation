@@ -4,6 +4,24 @@
 > Complexity scale (for ~1–2 engineers working with Claude Code agents): **S** ≤ 1 week · **M** 1–2 weeks · **L** 2–4 weeks · **XL** 4+ weeks.
 > Agents: `architect`, `frontend-specialist`, `backend-specialist`, `database-architect`, `ai-engineer`, `automation-engineer`, `security-auditor`, `qa-engineer`, `code-reviewer` (`.claude/agents/`).
 
+## Active profile: zero-cost (ADR-023): per-milestone changes
+Where a milestone below mentions Redis/BullMQ, worker containers, object storage, Claude, Voyage, Resend or billing, this table wins:
+
+| Milestone | Zero-cost changes |
+|---|---|
+| M0 | Docker Compose = Postgres + pgvector only. Build the `BackgroundJob` queue + `/api/cron/drain` + `after()` kick instead of a worker skeleton. Build the seams (`JobQueue`, `RateLimiter`, `FileStore`, `LlmProvider`, `EmbeddingProvider`, `Mailer`). Record free-tier limits in `docs/setup/free-tier-limits.md`. Configure cron-job.org. |
+| M1 | Better Auth with **Google sign-in only**; no transactional email. Deletion purge runs from the daily maintenance job. |
+| M2 | Files in `ResumeFile` (bytea). AI via `LlmProvider`: Gemini primary, Groq fallback, PII redaction. Parsing jobs on the DB queue. |
+| M3 | Only free public sources (Greenhouse/Lever/Ashby board APIs, Remotive, Arbeitnow); ingest chunked per page; `raw` not stored; storage-budget pruning. Legacy Apify on the owner's free credit only. |
+| M4 | Gemini embeddings, `halfvec(768)`. Explanations K ≤ 10/user/day; deterministic fallback when quota is exhausted. |
+| M5–M7 | Unchanged except notifications/reminders are in-app only. |
+| M8 | Gmail API only, OAuth app in Testing mode (explicit test users, weekly reconnect). No Microsoft, no reply tracking. Encryption key from env (no KMS). |
+| M9 | Local automation runner on the owner's PC; owner-only feature. |
+| M10 | Notification center in-app; the outbox is `BackgroundJob`; dead jobs on the admin page. No digests by email unless a free email channel is added. |
+| **M11** | **Deferred:** no billing while on Vercel Hobby (non-commercial). |
+| M12 | Free tooling only (ZAP, Semgrep CE, gitleaks, k6 OSS); load tests scaled to free-tier limits. |
+| M13 | Deploy = Vercel Hobby + Neon Free + cron-job.org + Sentry free; `*.vercel.app` domain. |
+
 ## Dependency graph
 
 ```mermaid
@@ -29,7 +47,7 @@ flowchart LR
   M12 --> M13["M13 Production Deployment"]
 ```
 
-Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M11 → M12 → M13. M3 can run in parallel with M1/M2 once M2's queue infrastructure lands (or M3 introduces it if started first).
+Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M11 → M12 → M13. In the zero-cost profile M11 is deferred, so M12 follows M10 directly. M3 can run in parallel with M1/M2 once M2's queue infrastructure lands (or M3 introduces it if started first).
 
 ---
 
@@ -40,15 +58,16 @@ Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M
   1. `git init`, first commit of current tree (verify `.env.local` is ignored), branch protection on remote.
   2. `npm ci` (repair broken `node_modules`), confirm `npm run build`, `test`, `lint`, `typecheck` pass for v1; read `node_modules/next/dist/docs/` and record any convention changes in `.claude/skills/nextjs-app-router`.
   3. Restructure to `src/` per ADR-021; v1 code moved to `src/legacy/` + route files kept working; path alias `@/*` → `src/*`.
-  4. TS strictness additions (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`), ESLint boundaries (`no-restricted-imports` for `server/` from client, ban `$queryRawUnsafe`), Prettier.
-  5. Prisma toolchain (ADR-004 confirmed first): `prisma.config.ts`, empty baseline migration with extensions; local Docker Compose (Postgres+pgvector, Redis, MinIO).
+  4. TS strictness additions (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`), ESLint boundaries (`no-restricted-imports` for `server/` from client, ban `sql.raw` with non-constant input and restrict `db` imports to `src/server/db/**` + repositories), Prettier.
+  5. Drizzle v2 toolchain (ADR-004, ADR-024): `src/server/db/client.ts`, `src/server/db/schema/_shared.ts` (`pgSchema("app")`, id/timestamp helpers) + `index.ts` barrel, drizzle-kit config covering `public` + `app` (`schemaFilter`), first custom migration with the extensions, then the generated baseline (drizzle-kit emits `CREATE SCHEMA "app"`); local Docker Compose (Postgres+pgvector only in the zero-cost profile; scale adds Redis, MinIO).
   6. Env validation split (`src/server/lib/env.ts` web vs worker schemas); `.env.example` updated.
   7. Core libs: `AppError` + `ActionResult`, `authedAction`/`route` wrappers (port v1 `lib/api.ts`), pino logger with redaction, Sentry (web), request id in `proxy.ts`, security headers + CSP (report-only first).
   8. CI (GitHub Actions): install, lint, typecheck, unit tests, build, gitleaks, `npm audit --omit=dev` (fail on high).
-  9. Worker skeleton (`src/workers/general.ts`) with health endpoint + Dockerfile (no queues yet).
-- **Dependencies:** owner decisions on ADR-004 (ORM), ADR-008 (worker host).
+  9. Background-job foundation: `BackgroundJob` queue (`SKIP LOCKED` claim, retries, `notBefore`), `/api/cron/drain` time-boxed runner (`DRAIN_TIME_BUDGET_MS = 20000`, summary returned within ~20 s because cron-job.org times out at 30 s), `after()` kick helper, cron-job.org schedule (every 30 min by default to protect Neon compute), and `docs/setup/free-tier-limits.md` (zero-cost profile; scale profile would add a BullMQ worker skeleton + Dockerfile).
+  10. Provider seams with fakes: `LlmProvider` (Gemini, Groq), `EmbeddingProvider`, `FileStore` (Postgres), `RateLimiter` (Postgres), `Mailer` (no-op until M8).
+- **Dependencies:** none open: ADR-004 (Drizzle) and ADR-024 (`app` schema) accepted 2026-11-04; ADR-008 replaced by ADR-023 (no worker host).
 - **Responsible agents:** `architect` (lead), `backend-specialist`, `database-architect`, `qa-engineer`, `security-auditor` (headers/CI scanning review).
-- **Deliverables:** restructured repo, CI pipeline, Docker Compose, Prisma baseline, core libs, updated docs.
+- **Deliverables:** restructured repo, CI pipeline, Docker Compose, Drizzle `app`-schema baseline migration, core libs, updated docs.
 - **Acceptance criteria:** fresh clone → `docker compose up` + `npm ci` + `npm run dev` works with documented steps; CI green on main; v1 pages still function locally; v1's 34 tests pass from new locations; no secrets in git history (gitleaks clean).
 - **Testing requirements:** existing Vitest suite; smoke test that legacy routes respond 200 (authed) / 307 (unauthed).
 - **Estimated complexity:** **M**
@@ -56,7 +75,7 @@ Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M
 ## Milestone 1: Authentication and User Management
 - **Objective:** real multi-user accounts with secure sessions and profiles.
 - **Features:** sign-up/in (email + Google/Microsoft), email verification, password reset, sessions management, onboarding steps 1 & 3 (goals, preferences), profile settings, consent capture, account deletion (with grace period), app shell + navigation.
-- **Technical tasks:** Better Auth + Prisma adapter (UUIDv7 ids); `User`, `Session`, `Account`, `Verification`, `UserProfile`, `UserConsent`, `AuditLog` migrations; `requireUser()`/`TenantContext`; transactional email provider + React Email templates; rate limiting (Redis) on auth; `(marketing)`, `(auth)`, `(app)` route groups; AppShell/Sidebar/Topbar; v1 password login retained only for `/legacy` behind owner flag; deletion purge job (runs synchronously via cron route until M2 queues exist).
+- **Technical tasks:** Better Auth + Drizzle adapter (`drizzleAdapter(db, { provider: "pg" })`, tables `app.users`/`app.sessions`/`app.accounts`/`app.verifications`, UUIDv7 ids); `User`, `Session`, `Account`, `Verification`, `UserProfile`, `UserConsent`, `AuditLog` migrations; `requireUser()`/`TenantContext`; transactional email provider + React Email templates; rate limiting (Redis) on auth; `(marketing)`, `(auth)`, `(app)` route groups; AppShell/Sidebar/Topbar; v1 password login retained only for `/legacy` behind owner flag; deletion purge job (runs synchronously via cron route until M2 queues exist).
 - **Dependencies:** M0.
 - **Responsible agents:** `backend-specialist` (lead), `frontend-specialist`, `database-architect`, `security-auditor` (mandatory review), `qa-engineer`.
 - **Deliverables:** working auth flows, onboarding (without resume step), settings profile/security tabs.
@@ -68,7 +87,7 @@ Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M
 - **Objective:** turn an uploaded resume into a verified, editable candidate profile.
 - **Features:** resume library, upload (PDF/DOCX), parsing progress, review & correction screen, versions, primary resume, onboarding step 2 & 4.
 - **Technical tasks:** object storage integration + presigned downloads; upload Route Handler with validation; **Redis + BullMQ infrastructure** (queue module, worker-general consumers, Bull Board for admins); text extraction (`unpdf`, `mammoth`); `src/server/ai/client.ts` (Anthropic SDK, usage metering, refusal handling); `resume.extract` prompt v1 + Zod schema + evidence verification; skill taxonomy seed + normaliser; experience analysis; `Resume`, `ResumeVersion`, `Skill`, `CandidateSkill`, `UsageRecord` migrations; Free-tier quota enforcement.
-- **Dependencies:** M1.
+- **Dependencies:** M1; owner decision on free-tier AI data routing (ADR-023 *Provider data-routing*, OPEN) before resume parsing is enabled for anyone but the owner.
 - **Responsible agents:** `ai-engineer` (lead for extraction), `backend-specialist` (upload, queues, storage), `frontend-specialist` (review UI), `database-architect`, `security-auditor` (upload + PII review), `qa-engineer` (eval set).
 - **Deliverables:** end-to-end resume pipeline; eval dataset v1 (≥ 30 resumes) with baseline metrics recorded.
 - **Acceptance criteria:** upload rejects wrong type/size/encrypted files; parsing completes p95 < 60 s; extraction eval: skill precision ≥ 0.90, recall ≥ 0.80, date accuracy ≥ 0.90, unverifiable-evidence rate < 2%; user edits persist across re-parse; no resume text in logs (verified by log-scrubber test); quota enforced.
@@ -90,7 +109,7 @@ Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M
 - **Objective:** transparent, explainable per-user match scores.
 - **Features:** match scores, breakdown, strengths/gaps, missing-skills insights (visible via minimal UI until M5).
 - **Technical tasks:** embeddings provider integration + model selection eval (records model/dimension in ADR-010); vector columns + HNSW index; `vector-repository.ts` raw SQL; hard filters; component scorers (pure functions, `scoringVersion 2026.1`); calibration of semantic range; LLM rerank/explain (`match.explain` prompt, prompt caching of candidate block); `JobMatch` migration; triggers (resume/profile change, schedule, on-demand); degraded mode without embeddings.
-- **Dependencies:** M2, M3.
+- **Dependencies:** M2, M3; embedding model fixed before M4 starts (`gemini-embedding-001` with manual L2 normalisation vs `gemini-embedding-2`; AI_MATCHING_DESIGN §4).
 - **Responsible agents:** `ai-engineer` (lead), `database-architect` (vector indexing/perf), `backend-specialist` (orchestration), `qa-engineer` (ranking eval), `architect` (scoring review).
 - **Deliverables:** matching pipeline, ranking eval dataset (≥ 20 profiles × 100 jobs labelled), scoring documentation in sync with `AI_MATCHING_DESIGN.md`.
 - **Acceptance criteria:** NDCG@10 ≥ 0.75 on eval set; LLM adjustment does not reduce NDCG (A/B on eval); every `JobMatch` has a complete breakdown; deterministic scorer has 100% branch coverage; matching run p95 < 5 s per user at 50K active jobs; explanations' evidence verification active.
@@ -111,7 +130,7 @@ Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M
 ## Milestone 6: Application Tracking System
 - **Objective:** a complete candidate-side ATS and v1 parity for the owner.
 - **Features:** Kanban (DnD + keyboard), list view + CSV export, application detail timeline, stage history, notes, contacts & contact logs, manual apply flow with answer sheet, apply-channel handling for WhatsApp / Google Form (v1 features), v1 data import.
-- **Technical tasks:** `JobApplication`, `ApplicationStageChange`, `ApplicationDocument`, `Contact`, `ContactLog` migrations; stage state machine; fractional indexing; optimistic updates; import script (Drizzle v1 tables → v2 for owner account); **retire v1 UI** (delete `src/legacy/` UI after import verified).
+- **Technical tasks:** `JobApplication`, `ApplicationStageChange`, `ApplicationDocument`, `Contact`, `ContactLog` migrations; stage state machine; fractional indexing; optimistic updates; import script (plain SQL from v1 `public.*` tables → v2 `app.*` tables for the owner account, ADR-024); **retire v1 UI** (delete `src/legacy/` UI after import verified).
 - **Dependencies:** M1, M3, M5.
 - **Responsible agents:** `frontend-specialist` (lead), `backend-specialist`, `database-architect` (import), `qa-engineer`, `code-reviewer`.
 - **Deliverables:** tracker, timeline, import script + run log.
@@ -164,6 +183,7 @@ Critical path: M0 → M1 → M2 → M4 → M5 → M6 → M8 → M9 → M10 → M
 - **Estimated complexity:** **M**
 
 ## Milestone 11: Subscription and Billing
+> **Deferred in the zero-cost profile (ADR-023).** Start only after moving web hosting off Vercel Hobby (commercial use) and resolving ADR-016.
 - **Objective:** monetisation with reliable entitlement enforcement.
 - **Features:** pricing page live, checkout, customer portal, plan limits with usage meters, upgrade prompts at limits, invoices.
 - **Technical tasks:** billing provider decision (ADR-016) → `BillingProvider` implementation; `Subscription` migration; signed webhooks + `WebhookEvent` idempotency; entitlement service reading plan + usage; grace periods (PAST_DUE); tax/VAT via provider; PKR/PPP pricing if supported.

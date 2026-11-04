@@ -139,7 +139,7 @@ export const logger = pino({
 
 ## 6. Rate limiting
 ```ts
-// src/server/lib/rate-limit.ts (rate-limiter-flexible + ioredis)
+// src/server/lib/rate-limit.ts (rate-limiter-flexible; zero-cost profile: RateLimiterPostgres on Neon, scale: Redis store)
 export async function consumeRateLimit(key: string, { points, durationSec }: Limit) {
   try { await limiter(points, durationSec).consume(key); }
   catch (res) {
@@ -155,7 +155,7 @@ Keys: `ip:<hash>` for unauthenticated, `<action>:<userId>` for authenticated, `h
 - Legacy Apify: dedicated secret in a header via webhook `headersTemplate`; body ignored; run status re-fetched (fixes v1 F1).
 
 ## 8. Tenant isolation checks
-- Repository functions require `ctx`; ESLint rule forbids importing `prisma` outside `src/server/db` and `**/repository.ts`.
+- Repository functions require `ctx`; ESLint rule forbids importing `db` outside `src/server/db` and `**/repository.ts` / `**/*-repository.ts`; `sql.raw()` with non-constant input is banned.
 - Tenancy registry test (TESTING_STRATEGY §3.3) fails if a model with `userId` lacks isolation tests.
 
 ## 9. Secrets handling
@@ -164,7 +164,7 @@ Keys: `ip:<hash>` for unauthenticated, `<action>:<userId>` for authenticated, `h
 - `.env*` files are denied to Claude Code (`.claude/settings.json`). If a secret is exposed, rotate it immediately and record it in the incident log.
 
 ## Anti-patterns
-- ❌ `crypto.createCipher` (deprecated), AES-CBC without MAC, static IVs, encrypting with `AUTH_SECRET`.
+- ❌ `crypto.createCipher` (deprecated), AES-CBC without MAC, static IVs, encrypting with `BETTER_AUTH_SECRET` (or v1's `AUTH_SECRET`): session secrets are never encryption keys.
 - ❌ Trusting `file.type` or file extensions.
 - ❌ Fetching user URLs with plain `fetch(url)`.
 - ❌ CSP with `'unsafe-eval'` or wildcard sources.

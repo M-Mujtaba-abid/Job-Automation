@@ -4,8 +4,7 @@ paths:
   - "src/workers/**/*.ts"
   - "src/app/api/**/*.ts"
   - "src/features/**/actions.ts"
-  - "lib/**/*.ts"
-  - "app/api/**/*.ts"
+  - "src/legacy/**/*.ts"
 ---
 
 # Backend Rules
@@ -15,9 +14,9 @@ References: `plan/SYSTEM_ARCHITECTURE.md`, `plan/API_DESIGN.md`. Skills: `server
 ## Layers
 | Layer | File | Responsibilities | Must not |
 |---|---|---|---|
-| Action / Route Handler | `features/<f>/actions.ts`, `app/api/**/route.ts` | auth (via wrapper), input parsing, call service, revalidate, map result | contain business rules or Prisma calls |
+| Action / Route Handler | `features/<f>/actions.ts`, `app/api/**/route.ts` | auth (via wrapper), input parsing, call service, revalidate, map result | contain business rules or database (Drizzle) calls |
 | Service | `server/modules/<d>/service.ts` | use cases, authorization, state transitions, transactions, enqueue jobs | parse HTTP/FormData, know about Next.js |
-| Repository | `server/modules/<d>/repository.ts` | Prisma/SQL queries, always scoped by `ctx.userId` for tenant data | contain business decisions |
+| Repository | `server/modules/<d>/repository.ts` | Drizzle queries (builder or `sql` template), always scoped by `eq(t.userId, ctx.userId)` for tenant data | contain business decisions |
 | Processor | `workers/processors/<queue>.ts` | load by id, call services, idempotent side effects | import Next.js modules |
 
 Services are framework-agnostic so workers can reuse them.
@@ -33,12 +32,15 @@ Services are framework-agnostic so workers can reuse them.
 - Wrapped with `route({ auth })`. Error JSON shape `{ error: { code, message, details?, requestId } }`. 500s return a generic message.
 - Set `export const maxDuration` only when needed; long work goes to queues instead.
 
-## Background jobs (BullMQ)
-- Queue names and payload Zod schemas are declared once in `src/server/jobs/`. Payloads contain ids and small enums only (no PII, no tokens).
-- Producers enqueue **after** the DB transaction commits (or via the outbox from M10). Use deterministic `jobId` when duplicates should collapse.
-- Processors: validate payload, load state, check it is still applicable (state machine guard), perform work, persist, enqueue follow-ups. Safe to run twice.
-- Configure retries/backoff per queue (`SYSTEM_ARCHITECTURE.md` §3.9). Mark non-retryable failures with `UnrecoverableError`.
-- Workers handle `SIGTERM`: stop taking jobs, finish or release in-flight jobs within the grace period.
+## Background jobs (active: Postgres `BackgroundJob` queue, ADR-023)
+- Always go through the `JobQueue` interface (`src/server/jobs/`); never touch `BackgroundJob` rows directly from modules. Queue names and payload Zod schemas are declared once there. Payloads contain ids and small enums only (no PII, no tokens).
+- Enqueue **inside** the same DB transaction as the state change (the table is our outbox). Use `dedupeKey` when duplicates should collapse.
+- Handlers must finish within the drain time-box. `DRAIN_TIME_BUDGET_MS` is **20 000 ms**: cron-job.org times out after 30 s and disables the job after more than 25 consecutive failures. Aim for each job to take ≤ 10 s. Chunk big work (one source page, ≤ 200 match candidates, one embedding batch per job) and enqueue the continuation. The drain endpoint always returns its summary (200) within ~20 s; any extra work continues via `after()` within the Vercel function limit.
+- User-triggered work is started with an `after()` kick from the action. Do not rely on the cron, which runs every 30 min by default to save Neon compute (ADR-023).
+- Processors: validate payload, load state, check it is still applicable (state-machine guard), perform work, persist, enqueue follow-ups. Safe to run twice.
+- Retries via `attempts`/`notBefore` backoff; throw `NonRetryableError` for permanent failures; AI-quota exhaustion **defers** (not a failure).
+- No long-running processes, no polling loops on Neon (it must be able to auto-suspend). The only long-running process is the owner's local automation runner.
+- Scale profile (later): the same `JobQueue` interface gets a BullMQ adapter; handler code does not change.
 
 ## External integrations
 - Every integration sits behind an interface in `src/server/integrations/<name>/` with a fake implementation for tests/dev.
@@ -46,13 +48,16 @@ Services are framework-agnostic so workers can reuse them.
 - Validate responses with Zod; map provider errors to `AppError("INTEGRATION_ERROR")` with safe messages.
 
 ## AI calls
-- Only through `src/server/ai/client.ts`; prompts are versioned files with their Zod output schema and model/effort config. See the `claude-ai-integration` skill.
-- Record usage (`UsageRecord`) for every call; check quotas before enqueueing user-triggered AI work.
+- Only through `src/server/ai` (`runTask` router → `LlmProvider`: Gemini primary, Groq fallback); prompts are versioned files with their Zod output schema. See the `llm-integration` skill.
+- PII redaction runs before every call. Record usage (`UsageRecord` with provider/model) for every call; check free-tier budgets before enqueueing user-triggered AI work.
+
+## Zero-cost guardrail
+- Do not add any dependency on a paid service, or on a service whose free tier needs an always-on process, without an ADR. Prefer Postgres-backed solutions for queues, rate limits, caching and small files.
 
 ## Transactions & concurrency
-- Multi-row invariants inside `prisma.$transaction` (interactive) with short duration; no external calls inside transactions.
+- Multi-row invariants inside `db().transaction(async (tx) => ...)` with short duration; no external calls inside transactions.
 - Claim work with `FOR UPDATE SKIP LOCKED` (v1 `processQueue` pattern) or BullMQ locks, never by read-then-update without a guard.
-- Enforce uniqueness with DB constraints, and handle the `P2002` conflict as `AppError("CONFLICT")`.
+- Enforce uniqueness with DB constraints, and handle unique violations (Postgres SQLSTATE `23505`, on the driver error or its `cause`) as `AppError("CONFLICT")`.
 
 ## Configuration
 - Read env only through `env()` (web) or `workerEnv()` (workers); never `process.env.X` in modules.

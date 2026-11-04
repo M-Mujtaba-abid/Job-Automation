@@ -11,10 +11,10 @@ These apply to every change in this repository. Area-specific rules live beside 
 
 ## TypeScript
 - `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` (from M0). No `any`; use `unknown` + narrowing. No non-null `!` except right after an explicit check the compiler can't see (add a comment).
-- Types come from Zod schemas (`z.infer`) or Prisma-generated types; do not hand-duplicate shapes.
+- Types come from Zod schemas (`z.infer`) or Drizzle-inferred types (`$inferSelect`/`$inferInsert`, repositories only); do not hand-duplicate shapes.
 - Prefer discriminated unions for states/results (`{ ok: true } | { ok: false }`), exhaustive `switch` with `assertNever`.
 - Named exports only (except where Next.js requires default exports: `page.tsx`, `layout.tsx`, etc.).
-- No enums in TS code: use Prisma enums or `as const` objects + union types.
+- No enums in TS code: use Drizzle `app.enum(...)` values (`enumObj.enumValues`) or `as const` objects + union types.
 
 ## Structure & boundaries (ADR-021)
 - Routing in `src/app/**` stays thin: parse params → call module service → render.
@@ -45,8 +45,8 @@ These apply to every change in this repository. Area-specific rules live beside 
 
 ## Testing
 - Tests ship with the code (TESTING_STRATEGY §11 Definition of Done). Bug fixes start with a failing test.
-- Pure logic → unit tests; DB/queue logic → integration tests against real Postgres/Redis; journeys → Playwright.
-- New tenant-owned Prisma model → add to the tenancy isolation registry.
+- Pure logic → unit tests; DB/queue logic → integration tests against real Postgres; journeys → Playwright.
+- New tenant-owned Drizzle table (has a `userId` column) → add to the tenancy isolation registry.
 
 ## Dependencies
 - Avoid new dependencies unless they remove meaningful complexity or risk. Justify each in the PR (size, maintenance, licence, alternatives). Security-sensitive libraries (auth, crypto, parsing) need `security-auditor` review.

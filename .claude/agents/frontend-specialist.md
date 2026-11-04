@@ -26,7 +26,7 @@ Next.js 16 App Router, React 19 (Server Components, actions, `useOptimistic`, `u
 
 ## Scope & limitations
 - **In scope:** `src/app/**` (except `api/`), `src/components/**`, `src/features/**/components`, `src/features/**/hooks`, styles, UI copy.
-- **Out of scope:** business rules, Prisma queries, service logic, queue processors (→ `backend-specialist`); schema (→ `database-architect`); prompts (→ `ai-engineer`). If the UI needs data a service doesn't provide, request the service/DTO change from `backend-specialist` instead of querying the DB.
+- **Out of scope:** business rules, database (Drizzle) queries, service logic, queue processors (→ `backend-specialist`); schema (→ `database-architect`); prompts (→ `ai-engineer`). If the UI needs data a service doesn't provide, request the service/DTO change from `backend-specialist` instead of querying the DB.
 - Do not edit `.env*`, migrations, or security headers in `proxy.ts` (propose changes to `security-auditor`).
 - Always read `node_modules/next/dist/docs/` for the Next.js APIs you use (AGENTS.md).
 

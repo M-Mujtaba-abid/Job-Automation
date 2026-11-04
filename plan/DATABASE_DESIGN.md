@@ -1,15 +1,15 @@
 # Database Design
 
-> PostgreSQL 16+ (Neon) · Prisma ORM (ADR-004, proposed) · extensions: `vector` (pgvector), `pg_trgm`, `citext`
-> **Active profile: zero-cost (ADR-023).** Resume bytes live in `ResumeFile` (bytea), background work in `BackgroundJob`, rate limits in `RateLimitBucket`, embeddings are `halfvec(768)`, and the storage budget in ADR-023 applies (Neon Free ≈ 0.5 GB).
-> The schema below is a **design**, not yet applied. It will be created in `prisma/schema.prisma` during Milestones 0–1 and grown per milestone (§9).
+> PostgreSQL 16+ (Neon) · **Drizzle ORM + drizzle-kit** (ADR-004, accepted 2026-11-04) · v2 tables in Postgres schema **`app`** (ADR-024) · extensions: `vector` (pgvector), `pg_trgm`, `citext`
+> **Active profile: zero-cost (ADR-023).** Resume bytes live in `ResumeFile` (bytea), background work in `BackgroundJob`, rate limits in `RateLimitBucket`, embeddings are `halfvec(768)`, and the storage budget in ADR-023 applies (Neon Free: 1 GB per project; budget kept conservative, alert at 70%).
+> The schema below is a **design**, not yet applied. It will be implemented as Drizzle `pg-core` tables in `src/server/db/schema/<domain>.ts` (barrel `src/server/db/schema/index.ts`) during Milestones 0–1, with migrations generated into `drizzle/`, and grown per milestone (§9). Entity and model names below (`JobMatch`, `userId`) are logical; physical names are snake_case (`app.job_matches.user_id`), see §5.1.
 
 ## 1. Design principles
 
 1. **Tenant key everywhere.** Every user-owned table has a non-null `userId` (FK → `User`, `onDelete: Cascade`) even when derivable through a parent. This allows a single-column scoping predicate on every query, cheap composite indexes beginning with `userId`, and future Row-Level Security (ADR-006).
 2. **Global catalog is separate.** `Company`, `Job`, `JobSource`, `JobSourceRun`, `JobSkill`, `JobApplyChannel`, `Skill` are shared and carry no `userId`. The exception is user-submitted private jobs (`Job.visibility = PRIVATE`, `ownerUserId`).
-3. **IDs:** UUIDv7 (`@default(uuid(7)) @db.Uuid`): time-ordered for index locality, non-enumerable. Better Auth is configured to generate UUIDv7 for its tables.
-4. **Timestamps:** `timestamptz` everywhere (`@db.Timestamptz(6)`), `createdAt`/`updatedAt` on mutable tables. Business times are stored in UTC; display timezone comes from `User.timezone`.
+3. **IDs:** UUIDv7 generated app-side (`uuid("id").primaryKey().$defaultFn(uuidv7)`): time-ordered for index locality, non-enumerable. Better Auth is configured to generate UUIDv7 for its tables. Raw SQL inserts must supply the id explicitly (there is no DB default).
+4. **Timestamps:** `timestamptz` everywhere (`timestamp(..., { withTimezone: true })`), `createdAt`/`updatedAt` on mutable tables. Business times are stored in UTC; display timezone comes from `User.timezone`.
 5. **State machines as enums** with guarded transitions in services (no free-text statuses).
 6. **History, not overwrites**, where users care about history: `ResumeVersion`, `ApplicationStageChange`, `AutomationExecution`, `AuditLog`.
 7. **JSONB only for** semi-structured payloads that are read whole and not filtered on (parsed resume, score breakdowns, automation steps). Anything filtered or joined is a column.
@@ -117,20 +117,151 @@ FollowUpReminder.status: PENDING → NOTIFIED → DONE | SNOOZED(→PENDING) | C
 Subscription.status:    TRIALING | ACTIVE | PAST_DUE | CANCELED | INCOMPLETE  (provider-driven)
 ```
 
-## 5. Proposed Prisma schema
+## 5. Logical schema
 
-> Syntax targets the Prisma 7 line (`prisma-client` generator, config in `prisma.config.ts`). Verify against installed docs at M0. Vector columns use `Unsupported` and are queried with raw SQL (§7).
+> **Logical schema (Prisma-style notation used for readability only; implemented with Drizzle `pg-core` in `src/server/db/schema/`).** The block in §5.3 is the entity model: fields, types, nullability, defaults, relations, uniques and indexes. It is not a file in the repo and is never compiled. Translate it with the mapping in §5.1; §5.2 is a complete worked example. When the Drizzle schema and this block disagree, fix whichever is wrong in the same PR (`database-architect` owns both).
 
-```prisma
-generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
-}
+### 5.1 Mapping to Drizzle (`drizzle-orm/pg-core`, `drizzle-orm ^0.45`)
 
-datasource db {
-  provider   = "postgresql"
-  extensions = [vector, pg_trgm, citext]
-}
+Shared helpers live in `src/server/db/schema/_shared.ts`: `export const app = pgSchema("app")` (ADR-024), plus `id()`, `createdAt()`, `updatedAt()`, `citext` and `bytea` custom types. One file per domain (`identity.ts`, `resume.ts`, `catalog.ts`, `matching.ts`, `applications.ts`, `mail.ts`, `automation.ts`, `platform.ts`), re-exported from `index.ts`. Verify each API against the installed `drizzle-orm` typings before use.
+
+| Logical notation | Drizzle implementation |
+|---|---|
+| `model JobMatch` | `export const jobMatches = app.table("job_matches", {...})`: snake_case **plural** table in schema `app`; TS export camelCase plural |
+| field `userId` | `userId: uuid("user_id")`: snake_case column, camelCase TS property |
+| `enum MatchStatus { NEW SEEN … }` | `export const matchStatus = app.enum("match_status", ["NEW", "SEEN", …])`: type in schema `app`, values unchanged (UPPER_CASE) |
+| `String @id @default(uuid(7)) @db.Uuid` | `id: uuid("id").primaryKey().$defaultFn(uuidv7)` (`import { v7 as uuidv7 } from "uuid"`) |
+| `String @db.Uuid` | `uuid("col")` |
+| `String` / `String?` | `text("col").notNull()` / `text("col")` |
+| `String @db.Citext` | `citext("col")` (`customType<{ data: string }>({ dataType: () => "citext" })`) |
+| `String @db.Char(n)` | `char("col", { length: n })` |
+| `String[]` / `WorkMode[]` / `String[] @db.Uuid` | `text("col").array()` / `workMode("col").array()` / `uuid("col").array()` |
+| `Int` / `BigInt` | `integer("col")` / `bigint("col", { mode: "bigint" })` |
+| `Decimal @db.Decimal(4, 1)` | `numeric("col", { precision: 4, scale: 1 })` (string in TS unless the installed version supports `mode: "number"`) |
+| `Boolean @default(false)` | `boolean("col").notNull().default(false)` |
+| `Json` / `Json @default("[]")` | `jsonb("col").$type<T>()` / `.notNull().default([])`; `T` comes from the Zod schema documenting the shape |
+| `Bytes` | `bytea("col")` (custom type, as in v1 `lib/db/schema.ts`) |
+| `DateTime @db.Timestamptz(6)` | `timestamp("col", { withTimezone: true })` |
+| `@default(now())` | `.notNull().defaultNow()` |
+| `@updatedAt` | `updatedAt()` helper: `timestamp("updated_at", { withTimezone: true, precision: 3 }).notNull().defaultNow().$onUpdate(() => new Date())`. App-side only: raw SQL `UPDATE`s must set `updated_at = now()` themselves |
+| `Unsupported("halfvec(768)")?` | `halfvec("embedding", { dimensions: 768 })` (native type, no raw SQL needed to read or write) |
+| `@relation(fields: [x], references: [id], onDelete: Cascade)` | `x: uuid("x").references(() => users.id, { onDelete: "cascade" })` (`"set null"`, `"restrict"`); self or circular references use `(): AnyPgColumn => table.id` |
+| relation list fields (`matches JobMatch[]`) and back-references | not columns: declared with `relations()` (`one` / `many`) in the same domain file, used only by `db.query.*` |
+| `@@id([a, b])` | `primaryKey({ columns: [t.a, t.b] })` in the table's extra-config array |
+| `@unique` / `@@unique([a, b])` | `.unique()` / `uniqueIndex("<table>_<cols>_key").on(t.a, t.b)` |
+| `@@index([a, b(sort: Desc)])` | `index("<table>_<purpose>_idx").on(t.a, t.b.desc())` |
+| `///` doc comment | JSDoc comment on the column; PII columns marked `/** PII */` |
+
+Physical names follow the pattern: `User` → `app.users`, `Session` → `app.sessions`, `Account` → `app.accounts`, `Verification` → `app.verifications` (mapped in the Better Auth Drizzle adapter, ADR-005), `UserProfile` → `app.user_profiles`, `ResumeVersion` → `app.resume_versions`, `CandidateSkill` → `app.candidate_skills`, `Company` → `app.companies`, `JobSourceRun` → `app.job_source_runs`, `JobApplyChannel` → `app.job_apply_channels`, `JobMatch` → `app.job_matches`, `JobApplication` → `app.job_applications`, `ApplicationStageChange` → `app.application_stage_changes`, `FollowUpReminder` → `app.follow_up_reminders`, `EmailMessage` → `app.email_messages`, `MessageTemplate` → `app.message_templates`, `AutomationTask` → `app.automation_tasks`, `AuditLog` → `app.audit_logs`, `BackgroundJob` → `app.background_jobs`, `RateLimitBucket` → `app.rate_limit_buckets`, `WebhookEvent` → `app.webhook_events`. The other models follow the same rule.
+
+### 5.2 Worked example: `background_jobs` and `job_matches`
+
+```ts
+// src/server/db/schema/_shared.ts
+import { customType, pgSchema, timestamp, uuid } from "drizzle-orm/pg-core";
+import { uuidv7 } from "@/server/lib/uuid"; // dependency-free RFC 9562 v7 (implemented in M0)
+
+export const app = pgSchema("app");                                  // ADR-024
+
+export const id = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
+export const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+/** precision 3 (ms) so the value round-trips exactly through JS Date: needed for optimistic-concurrency checks. */
+export const updatedAt = () =>
+  timestamp("updated_at", { withTimezone: true, precision: 3 }).notNull().defaultNow().$onUpdate(() => new Date());
+
+export const citext = customType<{ data: string }>({ dataType: () => "citext" });
+export const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+```
+
+```ts
+// src/server/db/schema/platform.ts
+import { index, integer, jsonb, text, timestamp } from "drizzle-orm/pg-core";
+import { app, createdAt, id } from "./_shared";
+
+export type BackgroundJobStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "DEAD";
+
+/** Zero-cost job queue (ADR-023). Drained by /api/cron/drain and after() kicks. */
+export const backgroundJobs = app.table(
+  "background_jobs",
+  {
+    id: id(),
+    queue: text("queue").notNull(),                                   // "resume-process" | "job-embed" | "match" | …
+    dedupeKey: text("dedupe_key").unique("background_jobs_dedupe_key_key"),
+    /** ids and small enums only: never PII or tokens */
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    status: text("status").$type<BackgroundJobStatus>().notNull().default("QUEUED"),
+    priority: integer("priority").notNull().default(100),             // lower runs first
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    notBefore: timestamp("not_before", { withTimezone: true }).notNull().defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedBy: text("locked_by"),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("background_jobs_claim_idx").on(t.status, t.notBefore, t.priority),
+    index("background_jobs_queue_status_idx").on(t.queue, t.status),
+  ],
+);
+```
+
+```ts
+// src/server/db/schema/matching.ts
+import { relations, sql } from "drizzle-orm";
+import { boolean, check, index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { app, id } from "./_shared";
+import { users } from "./identity";
+import { jobs } from "./catalog";
+import type { MatchExplanation, MissingSkill, ScoreBreakdown } from "@/server/modules/matching/schemas";
+
+export const matchStatus = app.enum("match_status", ["NEW", "SEEN", "DISMISSED", "APPLIED"]);
+
+export const jobMatches = app.table(
+  "job_matches",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+    scoringVersion: text("scoring_version").notNull(),
+    score: integer("score").notNull(),                                // 0–100 final
+    baseScore: integer("base_score").notNull(),                       // deterministic component
+    llmAdjustment: integer("llm_adjustment"),                         // bounded [-10, +10]
+    breakdown: jsonb("breakdown").$type<ScoreBreakdown>().notNull(),
+    missingSkills: jsonb("missing_skills").$type<MissingSkill[]>().notNull().default([]),
+    explanation: jsonb("explanation").$type<MatchExplanation>(),
+    degraded: boolean("degraded").notNull().default(false),
+    status: matchStatus("status").notNull().default("NEW"),
+    dismissedReason: text("dismissed_reason"),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+    explainedAt: timestamp("explained_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("job_matches_user_id_job_id_key").on(t.userId, t.jobId),
+    index("job_matches_feed_idx").on(t.userId, t.status, t.score.desc()),
+    index("job_matches_recent_idx").on(t.userId, t.computedAt.desc()),
+    index("job_matches_job_id_idx").on(t.jobId),
+    check("job_matches_score_range", sql`${t.score} BETWEEN 0 AND 100`),
+    check("job_matches_llm_adj_range", sql`${t.llmAdjustment} IS NULL OR ${t.llmAdjustment} BETWEEN -10 AND 10`),
+  ],
+);
+
+export const jobMatchesRelations = relations(jobMatches, ({ one }) => ({
+  user: one(users, { fields: [jobMatches.userId], references: [users.id] }),
+  job: one(jobs, { fields: [jobMatches.jobId], references: [jobs.id] }),
+}));
+
+export type JobMatchRow = typeof jobMatches.$inferSelect;
+export type NewJobMatch = typeof jobMatches.$inferInsert;
+```
+
+> Type-only imports from module `schemas.ts` (Zod-inferred JSON shapes) are allowed in schema files; runtime imports from modules are not (no cycles). Row types (`$inferSelect`) never leave repositories; services map them to DTOs.
+
+### 5.3 Entity model (logical notation)
+
+```text
+// Extensions (created by the first custom migration, §6): vector, pg_trgm, citext
 
 // ───────────────────────────── Enums ─────────────────────────────
 
@@ -218,7 +349,7 @@ model User {
   auditLogs         AuditLog[]
   privateJobs       Job[]     @relation("PrivateJobOwner")
 
-  @@map("user")
+  // physical table: app.users (Better Auth model "user", ADR-005)
 }
 
 model Session {
@@ -233,7 +364,7 @@ model Session {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
-  @@map("session")
+  // physical table: app.sessions (Better Auth model "session", ADR-005)
 }
 
 /// OAuth sign-in links + credential (password hash). NOT mailbox connections (see EmailAccount).
@@ -255,7 +386,7 @@ model Account {
 
   @@unique([providerId, accountId])
   @@index([userId])
-  @@map("account")
+  // physical table: app.accounts (Better Auth model "account", ADR-005)
 }
 
 model Verification {
@@ -267,7 +398,7 @@ model Verification {
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([identifier])
-  @@map("verification")
+  // physical table: app.verifications (Better Auth model "verification", ADR-005)
 }
 
 // ───────────────────────────── Candidate ─────────────────────────────
@@ -374,7 +505,7 @@ model Skill {
   candidates CandidateSkill[]
   jobs       JobSkill[]
 
-  @@index([name]) // + GIN trigram index in migration SQL (§6)
+  @@index([name]) // + GIN trigram + aliases GIN indexes (§6, declared in Drizzle)
 }
 
 model CandidateSkill {
@@ -1005,70 +1136,94 @@ model WebhookEvent {
 }
 ```
 
-## 6. Indexes and constraints that need hand-written migration SQL
+## 6. Special indexes, constraints and extensions
 
-Prisma cannot express these; add them in the generated migration file (`prisma migrate dev --create-only`, then edit) and document them in the migration's header comment.
+With Drizzle (ADR-004) almost everything below is declared **in the schema code** and emitted by `drizzle-kit generate`. Only extensions (and data backfills) need a **custom SQL migration** (`npx drizzle-kit generate --custom --name=<verb_noun>`, then write the SQL). The DDL block further down is the **reference DDL**: what the generated migration must contain. Reviewers compare the generated SQL against it.
+
+| Object | Table | Expressed in | Drizzle form (extra-config array of the table) |
+|---|---|---|---|
+| Schema `app` | n/a | drizzle-kit (from `pgSchema("app")`) | emitted automatically as `CREATE SCHEMA "app"` |
+| Extensions `vector`, `pg_trgm`, `citext` | n/a | **custom SQL migration** (first v2 migration, before any table using them) | n/a: drizzle-kit does not manage extensions |
+| HNSW cosine index (partial) | `app.jobs` | Drizzle | `` index("jobs_embedding_hnsw_idx").using("hnsw", t.embedding.op("halfvec_cosine_ops")).where(sql`${t.embedding} IS NOT NULL AND ${t.status} = 'ACTIVE'`) `` |
+| Trigram index | `app.skills` | Drizzle | `index("skills_name_trgm_idx").using("gin", t.name.op("gin_trgm_ops"))` |
+| GIN on `aliases text[]` | `app.skills` | Drizzle | `index("skills_aliases_gin_idx").using("gin", t.aliases)` |
+| Full-text expression index | `app.jobs` | Drizzle | `` index("jobs_fts_idx").using("gin", sql`to_tsvector('english', ${t.title} \|\| ' ' \|\| coalesce(${t.locationText}, '') \|\| ' ' \|\| ${t.description})`) `` |
+| Partial unique: no double send | `app.email_messages` | Drizzle | `` uniqueIndex("email_messages_no_double_send_idx").on(t.userId, t.applicationId, t.toAddress).where(sql`...`) `` |
+| Partial unique: one live task | `app.automation_tasks` | Drizzle | `` uniqueIndex("automation_tasks_one_active_idx").on(t.userId, t.jobId).where(sql`...`) `` |
+| Partial unique: one default template | `app.message_templates` | Drizzle | `` uniqueIndex("message_templates_one_default_idx").on(t.userId).where(sql`${t.isDefault}`) `` |
+| CHECK constraints | `app.job_matches`, `app.jobs` | Drizzle | `` check("job_matches_score_range", sql`${t.score} BETWEEN 0 AND 100`) `` etc. (see §5.2) |
+| Queue claim, stale-lock reset | `app.background_jobs` | repository code (`sql` template, §7) | not DDL |
+
+Notes:
+- Index `.where()` and `check()` SQL must reference columns via `${t.column}` (never hand-typed names), so renames stay consistent.
+- drizzle-kit applies each migration in a transaction, so `CREATE INDEX CONCURRENTLY` is not available there. At beta data sizes this is fine. Once `app.jobs` is large, build new HNSW/GIN indexes in a custom migration that is explicitly marked as non-transactional, after `database-architect` review.
+- pgvector ≥ 0.7 is required for `halfvec`; verify Neon's installed version (`SELECT extversion FROM pg_extension WHERE extname = 'vector'`) in M0.
+
+Reference DDL (v2, schema `app`):
 
 ```sql
--- Extensions (first migration)
+-- Custom migration (first v2 migration): extensions live in public so types/opclasses are visible to both schemas (ADR-024)
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS citext;
+-- drizzle-kit emits: CREATE SCHEMA "app";
 
--- Vector ANN index (HNSW, cosine) on half-precision vectors (pgvector ≥ 0.7; verify Neon's pgvector version).
-CREATE INDEX job_embedding_hnsw ON "Job" USING hnsw (embedding halfvec_cosine_ops)
+-- Vector ANN index (HNSW, cosine) on half-precision vectors (pgvector >= 0.7).
+CREATE INDEX jobs_embedding_hnsw_idx ON app.jobs USING hnsw (embedding halfvec_cosine_ops)
   WHERE embedding IS NOT NULL AND status = 'ACTIVE';
 
--- Zero-cost queue claim (used by the drain endpoint):
---   UPDATE "BackgroundJob" SET status='RUNNING', "lockedAt"=now(), "lockedBy"=$worker, attempts=attempts+1
---   WHERE id IN (SELECT id FROM "BackgroundJob" WHERE status='QUEUED' AND "notBefore" <= now()
---                ORDER BY priority, "notBefore" FOR UPDATE SKIP LOCKED LIMIT $n) RETURNING *;
--- Stale RUNNING rows (lockedAt older than 5 min) are reset to QUEUED by the maintenance job.
--- Profile embeddings are queried by userId, so no ANN index is needed on UserProfile.
+-- Zero-cost queue claim (used by the drain endpoint; implemented in the queue repository with Drizzle `sql`):
+--   UPDATE app.background_jobs SET status='RUNNING', locked_at=now(), locked_by=$worker, attempts=attempts+1
+--   WHERE id IN (SELECT id FROM app.background_jobs WHERE status='QUEUED' AND not_before <= now()
+--                ORDER BY priority, not_before FOR UPDATE SKIP LOCKED LIMIT $n) RETURNING *;
+-- Stale RUNNING rows (locked_at older than 5 min) are reset to QUEUED by the maintenance job.
+-- Profile embeddings are queried by user_id, so no ANN index is needed on app.user_profiles.
 
 -- Fuzzy skill lookup during normalisation
-CREATE INDEX skill_name_trgm ON "Skill" USING gin (name gin_trgm_ops);
-CREATE INDEX skill_aliases_gin ON "Skill" USING gin (aliases);
+CREATE INDEX skills_name_trgm_idx ON app.skills USING gin (name gin_trgm_ops);
+CREATE INDEX skills_aliases_gin_idx ON app.skills USING gin (aliases);
 
 -- Job full-text search (Discover keyword search), ported from v1 jobs_search_idx
-CREATE INDEX job_fts ON "Job" USING gin (
-  to_tsvector('english', title || ' ' || coalesce("locationText", '') || ' ' || description)
+CREATE INDEX jobs_fts_idx ON app.jobs USING gin (
+  to_tsvector('english', title || ' ' || coalesce(location_text, '') || ' ' || description)
 );
 
 -- Double-send protection (ported from v1 applications_no_double_apply_idx)
-CREATE UNIQUE INDEX email_message_no_double_send ON "EmailMessage" ("userId", "applicationId", "toAddress")
-  WHERE direction = 'OUTBOUND' AND status IN ('QUEUED', 'SENDING', 'SENT') AND "applicationId" IS NOT NULL;
+CREATE UNIQUE INDEX email_messages_no_double_send_idx ON app.email_messages (user_id, application_id, to_address)
+  WHERE direction = 'OUTBOUND' AND status IN ('QUEUED', 'SENDING', 'SENT') AND application_id IS NOT NULL;
 
 -- At most one live automation task per user+job
-CREATE UNIQUE INDEX automation_task_one_active ON "AutomationTask" ("userId", "jobId")
+CREATE UNIQUE INDEX automation_tasks_one_active_idx ON app.automation_tasks (user_id, job_id)
   WHERE status IN ('PREPARING', 'AWAITING_APPROVAL', 'APPROVED', 'SUBMITTING');
 
 -- One default template per user
-CREATE UNIQUE INDEX message_template_one_default ON "MessageTemplate" ("userId") WHERE "isDefault";
+CREATE UNIQUE INDEX message_templates_one_default_idx ON app.message_templates (user_id) WHERE is_default;
 
 -- Integrity checks
-ALTER TABLE "JobMatch" ADD CONSTRAINT job_match_score_range CHECK (score BETWEEN 0 AND 100);
-ALTER TABLE "JobMatch" ADD CONSTRAINT job_match_llm_adj_range CHECK ("llmAdjustment" IS NULL OR "llmAdjustment" BETWEEN -10 AND 10);
-ALTER TABLE "Job" ADD CONSTRAINT job_salary_order CHECK ("salaryMin" IS NULL OR "salaryMax" IS NULL OR "salaryMin" <= "salaryMax");
-ALTER TABLE "Job" ADD CONSTRAINT job_private_has_owner CHECK (visibility = 'PUBLIC' OR "ownerUserId" IS NOT NULL);
+ALTER TABLE app.job_matches ADD CONSTRAINT job_matches_score_range CHECK (score BETWEEN 0 AND 100);
+ALTER TABLE app.job_matches ADD CONSTRAINT job_matches_llm_adj_range CHECK (llm_adjustment IS NULL OR llm_adjustment BETWEEN -10 AND 10);
+ALTER TABLE app.jobs ADD CONSTRAINT jobs_salary_order CHECK (salary_min IS NULL OR salary_max IS NULL OR salary_min <= salary_max);
+ALTER TABLE app.jobs ADD CONSTRAINT jobs_private_has_owner CHECK (visibility = 'PUBLIC' OR owner_user_id IS NOT NULL);
 ```
 
-> Table names: models without `@@map` use Prisma's default (PascalCase, quoted). The Better Auth tables are mapped to lowercase as that library expects. Decide in M0 whether to `@@map` everything to snake_case for SQL ergonomics; if so, update the SQL above.
+> Naming: tables snake_case plural, columns snake_case, indexes `<table>_<purpose>_idx`, unique constraints `<table>_<cols>_key`, checks `<table>_<rule>`. The v1 tables in `public` keep their names until they are dropped after M6 (ADR-024).
 
 ## 7. Query patterns
+
+Queries below use logical names; repositories write them with the Drizzle query builder (`db.select().from(jobMatches).where(...)`) or, for claims, vector search and aggregates, with the parameterised `sql` template via ``db.execute(sql`...`)``.
 
 | Use case | Query | Index |
 |---|---|---|
 | Discover feed | `JobMatch where userId, status in (NEW,SEEN) order by score desc` + join Job (keyset pagination on `(score, id)`) | `JobMatch(userId, status, score desc)` |
 | Kanban board | `JobApplication where userId and archivedAt is null order by stage, boardPosition` | `(userId, stage, boardPosition)` |
-| Candidate retrieval for matching | raw SQL: hard filters + `ORDER BY embedding <=> $profileVec LIMIT 500` on `status='ACTIVE' AND firstSeenAt > $lastMatchedAt` | `job_embedding_hnsw` (+ `SET hnsw.ef_search = 100`) |
+| Candidate retrieval for matching | Drizzle `sql` (or builder + `cosineDistance`): hard filters + `ORDER BY embedding <=> $profileVec LIMIT 500` on `status='ACTIVE' AND firstSeenAt > $lastMatchedAt` | `jobs_embedding_hnsw_idx` (+ `SET LOCAL hnsw.ef_search = 100` in a transaction) |
 | Skill overlap | `JobSkill join CandidateSkill on skillId where jobId = any($ids) and userId = $u` | `JobSkill(skillId, importance)`, `CandidateSkill(userId, skillId)` |
 | Due reminders | `FollowUpReminder where status='PENDING' and dueAt <= now() for update skip locked limit 100` | `(status, dueAt)` |
 | Mail queue claim | v1 `SKIP LOCKED` claim pattern on `EmailMessage(status='QUEUED')` | `(emailAccountId, status, createdAt)` |
 | Quota check | `sum(quantity) from UsageRecord where userId, metric, periodKey` | `(userId, metric, periodKey)` |
 | Dashboard funnel | `count(*) group by stage` + `ApplicationStageChange` for time-in-stage | `(userId, stage, …)`, `(userId, changedAt)` |
 
-Vector queries live **only** in `src/server/modules/matching/vector-repository.ts` using `$queryRaw` with tagged templates (parameterised; never `$queryRawUnsafe`).
+Vector queries live **only** in `src/server/modules/matching/vector-repository.ts`, written with the Drizzle query builder (`cosineDistance(jobs.embedding, profileVec)`) or the parameterised `sql` tagged template via ``db.execute(sql`...`)``. Interpolated values are always bound parameters; `sql.raw()` with any non-constant input is banned, and dynamic identifiers (sort columns) come from allowlist maps of Drizzle column objects. Raw `sql` references tables through the Drizzle objects (`${jobs}` renders `"app"."jobs"`) and columns through `${jobs.embedding}` wherever a qualified reference is valid. `UPDATE … SET` targets and `INSERT` column lists use the snake_case names as source constants. Raw SQL bypasses `$defaultFn`/`$onUpdate`, so it must supply `id` and `updated_at` itself.
 
 ## 8. Cascade, retention & deletion policy
 
@@ -1090,13 +1245,13 @@ Deletion flow: `User.deletionRequestedAt` set → sessions revoked immediately �
 
 | Milestone | Tables introduced |
 |---|---|
-| M0 | extensions; ORM toolchain; BackgroundJob, RateLimitBucket |
+| M0 | custom migration: extensions; generated: schema `app` (ADR-024); Drizzle toolchain (`_shared.ts`, `client.ts`, config); `app.background_jobs`, `app.rate_limit_buckets` |
 | M1 | User, Session, Account, Verification, UserProfile, UserConsent, AuditLog |
 | M2 | Resume, ResumeVersion, ResumeFile, Skill (+ seed), CandidateSkill, UsageRecord |
 | M3 | Company, JobSource, JobSourceRun, Job, JobSkill, JobApplyChannel |
 | M4 | vector columns + HNSW, JobMatch |
 | M5 | SavedJob |
-| M6 | JobApplication, ApplicationStageChange, ApplicationDocument, Contact, ContactLog; v1 data import script |
+| M6 | JobApplication, ApplicationStageChange, ApplicationDocument, Contact, ContactLog; v1 data import script (plain SQL `public.*` → `app.*`, ADR-024) |
 | M7 | Interview, InterviewQuestion, FollowUpReminder |
 | M8 | EmailAccount, EmailMessage, MessageTemplate, WebhookEvent |
 | M9 | AutomationTask, AutomationExecution |
@@ -1105,3 +1260,11 @@ Deletion flow: `User.deletionRequestedAt` set → sessions revoked immediately �
 | M12 | RLS policies (optional), partitioning review |
 
 Rules: migrations are forward-only in production; destructive changes use expand → backfill → contract across two releases; every migration is reviewed by the `database-architect` agent.
+
+### 9.1 Migration tooling (drizzle-kit)
+- **Config** (`drizzle.config.ts`, root): `dialect: "postgresql"`, `schema: ["./lib/db/schema.ts", "./src/server/db/schema/index.ts"]` (v1 + v2 until M6), `out: "./drizzle"`, `schemaFilter: ["public", "app"]`, `strict: true`, `verbose: true`, credentials from the **direct** (unpooled) Neon URL. After M6 the v1 entry is removed together with the v1 tables.
+- **Generate:** edit `src/server/db/schema/*.ts` → `npm run db:generate` (`drizzle-kit generate --name <verb_noun>`) → review the SQL in `drizzle/NNNN_<verb_noun>.sql` and the snapshot in `drizzle/meta/`. Commit the schema change, the SQL and the snapshot together.
+- **Custom SQL** (extensions, backfills, anything not diffable): `npx drizzle-kit generate --custom --name <verb_noun>`, then write the SQL with a header comment explaining why it is manual.
+- **Apply:** `npm run db:migrate` (`drizzle-kit migrate`). Only the owner (locally, against a dev branch or local Docker) or the CI release step runs it. Agents never apply migrations to shared databases.
+- **Never** run `drizzle-kit push` against any shared database (Neon main or preview branches), never edit an applied migration, and never delete files from `drizzle/` or `drizzle/meta/`.
+- **Drift check in CI:** apply all migrations to an empty database, then `drizzle-kit generate` must produce no new migration (and `drizzle-kit check` must pass).

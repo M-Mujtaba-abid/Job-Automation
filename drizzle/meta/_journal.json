@@ -15,6 +15,13 @@
       "when": 1791315960110,
       "tag": "0001_cv_in_db",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793779763044,
+      "tag": "0002_app_platform_queue",
+      "breakpoints": true
     }
   ]
 }

@@ -8,8 +8,8 @@ Root `CLAUDE.md` covers the project, the document map and the golden rules. This
 | `architect` | plan/ docs, ADRs, module boundaries, milestone task breakdowns | plan/docs/.claude only | milestone start; new module/queue/integration/store; cross-module changes; doc–code conflicts |
 | `frontend-specialist` | pages, layouts, components, UX, a11y | yes | any UI work |
 | `backend-specialist` | services, actions, route handlers, auth, queues, integrations | yes | business logic, APIs, workers (non-automation) |
-| `database-architect` | Prisma schema, migrations, indexes, pgvector, retention, imports | yes | any schema/migration/hot-query change |
-| `ai-engineer` | Claude integration, prompts, extraction, embeddings, scoring, evals | yes | any LLM/embedding/scoring change |
+| `database-architect` | Drizzle schema (`app` schema), drizzle-kit migrations, indexes, pgvector, retention, imports | yes | any schema/migration/hot-query change |
+| `ai-engineer` | LLM layer (Gemini/Groq), prompts, extraction, embeddings, scoring, evals | yes | any LLM/embedding/scoring change |
 | `automation-engineer` | Playwright worker, ATS adapters, submission verification | yes | automation engine work |
 | `security-auditor` | security review & sign-off | **no** (read-only) | auth, tokens, uploads, webhooks, SSRF, CSP, logging PII, automation, billing, admin |
 | `qa-engineer` | test plans, test infra, verification, status evidence | tests only | milestone test plans; flaky tests; before marking COMPLETED |
@@ -22,9 +22,10 @@ Boundaries are deliberate: implementers don't approve their own security or comp
 |---|---|
 | `nextjs-app-router` | routes, RSC/Client boundaries, caching, proxy.ts, route handlers |
 | `server-actions` | `authedAction`, `ActionResult`, forms, optimistic UI |
-| `prisma-postgresql` | schema, migrations, tenant repositories, SKIP LOCKED, vector SQL |
+| `drizzle-postgresql` | Drizzle schema (`pgSchema("app")`), drizzle-kit migrations, tenant repositories, SKIP LOCKED, halfvec vector search |
 | `playwright-automation` | ATS adapters, blocker detection, E2E and fixture tests |
-| `claude-ai-integration` | AI client, versioned prompts, structured outputs, evals (also use built-in `claude-api`) |
+| `llm-integration` | **active AI layer**: LlmProvider (Gemini + Groq free tiers), PII redaction, budgets, structured JSON + Zod, embeddings, evals |
+| `claude-ai-integration` | optional paid Claude adapter only (scale profile; also use built-in `claude-api`) |
 | `api-design` | contracts, error codes, webhooks, pagination, idempotency |
 | `security-best-practices` | encryption, uploads, SSRF, CSP, redaction, rate limits, review checklist |
 
@@ -47,4 +48,4 @@ Code + tests (unit/integration/contract, E2E when part of a journey) · lint/typ
 `NOT STARTED` · `IN PROGRESS` · `BLOCKED` (with reason) · `COMPLETED` (only with verification evidence). Documentation/config completion is tracked separately from application implementation.
 
 ## Permissions (`.claude/settings.json`)
-Read-only checks (lint, typecheck, tests, git status/diff/log) are pre-approved. Installs, migrations, commits/pushes, docker, curl and evals ask first. Secret files, destructive git/filesystem commands, `prisma migrate reset/deploy`, `db push` and production deploys are denied. Do not work around denials; ask the owner.
+Read-only checks (lint, typecheck, tests, git status/diff/log) are pre-approved. Installs, migrations, commits/pushes, docker, curl and evals ask first. Secret files, destructive git/filesystem commands, `drizzle-kit push` against shared databases and production deploys are denied; `drizzle-kit migrate` on shared environments is run by the owner or CI only. Do not work around denials; ask the owner.

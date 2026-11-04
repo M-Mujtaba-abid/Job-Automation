@@ -90,7 +90,7 @@ flowchart LR
 
 ### 3.2 Backend (inside the web tier)
 - **`proxy.ts`:** optimistic session-cookie presence check + redirects, security headers, request id. **Not** an authorization boundary; every action/handler re-verifies the session (as v1 does).
-- **Domain modules** (`src/server/modules/<domain>`): `service.ts` (use cases, transactions, authorization), `repository.ts` (Prisma queries, always tenant-scoped), `schemas.ts` (Zod), `index.ts` (public API). Modules are framework-agnostic so workers reuse them.
+- **Domain modules** (`src/server/modules/<domain>`): `service.ts` (use cases, transactions, authorization), `repository.ts` (Drizzle queries, always tenant-scoped), `schemas.ts` (Zod), `index.ts` (public API). Modules are framework-agnostic so workers reuse them.
 - **Authorization:** `requireUser()` → `TenantContext { userId, plan, roles }` passed explicitly into services. Admin operations require `role = ADMIN` and are audited.
 - **Error model:** typed `AppError(code, message, details)` mapped to `ActionResult` / HTTP status in one place (pattern from v1 `lib/api.ts`), with internal messages never leaked on 500s.
 
@@ -137,7 +137,7 @@ Two-phase prepare/approve/submit with per-ATS adapters; artifacts (screenshots, 
 Payloads are Zod-validated on both ends and carry only ids (never PII blobs). Job ids are deterministic where duplicates must collapse (e.g. `match:{userId}:{date}`).
 
 ### 3.10 Database
-PostgreSQL 16+ with `pgvector`, `pg_trgm`, `citext`. Prisma for CRUD, raw SQL (TypedSQL) for vector search, `SKIP LOCKED` claims and reporting aggregates. Details: `DATABASE_DESIGN.md`.
+PostgreSQL 16+ with `pgvector`, `pg_trgm`, `citext`. Drizzle ORM (ADR-004) with the query builder for CRUD and the parameterised `sql` template for `SKIP LOCKED` claims and reporting aggregates; vector search uses Drizzle's native `halfvec` type and `cosineDistance`. v2 tables live in Postgres schema `app`, next to v1's `public` tables until the M6 import (ADR-024). Details: `DATABASE_DESIGN.md`.
 
 ### 3.11 External integrations
 
@@ -158,7 +158,7 @@ PostgreSQL 16+ with `pgvector`, `pg_trgm`, `citext`. Prisma for CRUD, raw SQL (T
 flowchart TB
   DEV["Developer / CI<br/>GitHub Actions"] -->|"preview + prod deploys"| VER["Vercel project<br/>web tier"]
   DEV -->|"docker build + deploy"| WH["Worker host<br/>Railway / Fly / Render"]
-  DEV -->|"prisma migrate deploy<br/>(release step)"| NEON[("Neon Postgres<br/>main + preview branches")]
+  DEV -->|"drizzle-kit migrate<br/>(release step)"| NEON[("Neon Postgres<br/>main + preview branches")]
   VER --> NEON
   VER --> REDIS[("Managed Redis")]
   WH --> NEON
@@ -314,7 +314,7 @@ sequenceDiagram
 | From → To | Mechanism | Contract |
 |---|---|---|
 | Browser → web | HTTPS: RSC payloads, Server Action POSTs, Route Handler JSON | `API_DESIGN.md` |
-| Web modules → DB | Prisma over pooled connection (Neon serverless driver adapter) | tenant-scoped repositories |
+| Web modules → DB | Drizzle over the pooled Neon URL (`drizzle-orm/neon-serverless`) | tenant-scoped repositories; schema `app` |
 | Web → workers | BullMQ enqueue (Redis) | Zod payload schemas in `src/server/jobs/payloads.ts`; payloads carry ids only |
 | Workers → web/UI | DB state + `Notification` rows; UI polls/refreshes | status enums with guarded transitions |
 | External → web | Signed webhooks (billing, mail push, Apify legacy) | signature verified, event-id idempotency table |
@@ -357,7 +357,7 @@ flowchart LR
     PG[("Postgres + pgvector<br/>data, BackgroundJob queue,<br/>RateLimitBucket, ResumeFile bytes")]
   end
   subgraph Free["Free external services"]
-    PING["cron-job.org<br/>every 5-15 min"]
+    PING["cron-job.org<br/>every 30 min (default)"]
     GEM["Gemini API free tier<br/>LLM + embeddings"]
     GRQ["Groq free tier<br/>LLM fallback"]
     SRC["Public job APIs<br/>Greenhouse, Lever, Ashby, Remotive"]
@@ -385,8 +385,8 @@ flowchart LR
 ### 8.2 How background work runs without workers
 1. A service enqueues a `BackgroundJob` row **inside the same transaction** as the state change (this doubles as the transactional outbox).
 2. The action schedules `after(() => drain({ budgetMs: 20_000 }))` so short jobs (e.g. resume parse) usually start within seconds of the request. Verify `after()` semantics and Hobby function limits in the installed Next.js/Vercel docs.
-3. **cron-job.org** calls `GET /api/cron/drain` every 5–15 minutes with `Authorization: Bearer CRON_SECRET`; Vercel's once-a-day cron is a backstop. Between calls Neon can auto-suspend, saving compute allowance.
-4. `drain()` claims jobs with `FOR UPDATE SKIP LOCKED` ordered by `priority, notBefore`, runs handlers until ~45 s have elapsed, then exits. Unfinished work stays queued.
+3. **cron-job.org** calls `GET /api/cron/drain` **every 30 minutes by default** (configurable in the cron-job.org job) with `Authorization: Bearer CRON_SECRET`; Vercel's once-a-day cron is a backstop. The interval is long on purpose. Neon suspends compute only after **5 idle minutes**, and every call wakes it. A 10-minute drain would keep the database awake about half the time and could use up the free compute allowance, which v1, v2 and the dev branch share (ADR-023 *Neon compute budget*). User-triggered work therefore relies on the `after()` kick in step 2; the cron only picks up deferred, retried and bulk work. When nothing is due, the drain exits after one indexed query.
+4. `drain()` claims jobs with `FOR UPDATE SKIP LOCKED` ordered by `priority, notBefore` and runs handlers until **`DRAIN_TIME_BUDGET_MS` (20 000 ms)** has elapsed. It then returns its summary (`{ processed, remaining, deferred }`). cron-job.org times out after **30 s** and disables a job after **more than 25 consecutive failures**, so the response must always arrive within ~20 s. If work remains, the handler may continue with `after(() => drain({ budgetMs }))`, staying inside the Vercel function duration limit; that continuation never delays the response. Unfinished work stays queued. The handler should also catch its own errors and still return 200 with a summary, so that a single bad job never counts as a cron failure.
 5. Long tasks are **chunked**: ingest processes one page of a source per job and enqueues the next page; matching scores ≤ 200 candidates per job; embedding batches ≤ provider batch limit.
 6. Failures: `attempts++`, exponential `notBefore` backoff, `DEAD` after `maxAttempts` (visible on the admin page). Stale `RUNNING` rows (> 5 min) are reset by the maintenance job.
 7. AI budget exhausted → the job is re-queued with `notBefore` = next quota reset; the UI shows deterministic results meanwhile.
@@ -395,9 +395,9 @@ flowchart LR
 | Logical queue (§3.9) | Zero-cost implementation | Typical latency |
 |---|---|---|
 | `resume-process` | BackgroundJob, priority 10, `after()` kick | seconds–1 min |
-| `ingest`, `job-process`, `job-embed` | BackgroundJob, priority 100, cron-driven, chunked | 5–30 min |
-| `match`, `match-explain` | BackgroundJob, priority 50, dedupe key per user/day | minutes |
-| `mail-send` | BackgroundJob, priority 20, per-account spacing via `notBefore` | minutes |
+| `ingest`, `job-process`, `job-embed` | BackgroundJob, priority 100, cron-driven, chunked | 30–60 min (one chunk per 30-min drain, plus `after()` continuations) |
+| `match`, `match-explain` | BackgroundJob, priority 50, dedupe key per user/day; `after()` kick when user-triggered | seconds–minutes when kicked, otherwise next drain (≤ 30 min) |
+| `mail-send` | BackgroundJob, priority 20, per-account spacing via `notBefore` | first send on the `after()` kick; spaced sends go out on later drains (≤ 30 min apart) |
 | `notify`, `maintenance` | BackgroundJob; maintenance runs once per day from the Vercel cron | hours |
 | `automation-prepare/submit` | `AutomationTask` rows picked up by the **local runner** on the owner's PC | when the runner is on |
 
@@ -406,6 +406,7 @@ flowchart LR
 
 ### 8.5 Limits to respect (verify current numbers in M0, record them in `docs/setup/free-tier-limits.md`)
 - Vercel Hobby: non-commercial use; cron frequency; function max duration; monthly invocations/bandwidth.
-- Neon Free: storage (≈0.5 GB) and compute allowance → storage budget in ADR-023.
+- Neon Free: storage **1 GB per project** (writes blocked when full; budget kept conservative, alert at 70%), compute **100 CU-hours/month per project shared by all branches**, auto-suspend after 5 idle minutes → storage and compute budgets in ADR-023.
+- cron-job.org: 30 s request timeout; job auto-disabled after more than 25 consecutive failures → drain budget 20 s, 30-min default interval.
 - Gemini/Groq: requests per minute/day and tokens per minute per model → daily budgets in config.
 - Gmail API Testing mode: explicit test users; ~7-day refresh-token lifetime.

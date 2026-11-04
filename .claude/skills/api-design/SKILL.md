@@ -25,7 +25,7 @@ description: API contract conventions for this project - when to use Server Acti
 ## Contract rules
 1. **Every contract has a Zod schema** for input and output in the module's `schemas.ts`; types derive from them.
 2. **Inputs:** ids `z.uuid()`; strings trimmed + max length; enums for categories; dates `z.iso.datetime()`; arrays capped (`.max(100)`); numbers bounded.
-3. **Outputs:** DTOs, never raw Prisma rows; dates as ISO strings; no internal fields (`raw`, `extractedText`, tokens, other users' ids).
+3. **Outputs:** DTOs, never raw Drizzle rows; dates as ISO strings; no internal fields (`raw`, `extractedText`, tokens, other users' ids).
 4. **Errors:** codes from the shared catalogue (`API_DESIGN.md` §1.3). Actions return `{ ok:false, error }`; handlers respond `{ error: { code, message, details?, requestId } }` with the mapped status.
 5. **Authorization in the service**, not only in the route: services receive `TenantContext`.
 6. **Foreign resources → 404/NOT_FOUND**, never 403 (no existence oracle).

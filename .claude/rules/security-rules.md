@@ -16,7 +16,7 @@ Full design: `plan/SECURITY_DESIGN.md`. These are the rules every change must sa
 
 ## Input & output
 - Validate all external input with Zod: action inputs, route params/query/body, webhook payloads, third-party API responses, LLM outputs, queue payloads.
-- Raw SQL only via tagged-template `$queryRaw`/TypedSQL. `$queryRawUnsafe` and `$executeRawUnsafe` are forbidden.
+- Raw SQL only via Drizzle's parameterised `sql` tagged template. `sql.raw()` with any non-constant input is forbidden; dynamic identifiers come from allowlists.
 - No `dangerouslySetInnerHTML` except through the approved sanitiser for job descriptions.
 - Redirect targets from input must be relative paths (`^/(?!/)`).
 - Server-side fetching of user-provided URLs requires the SSRF guard (resolve DNS, block private/link-local/metadata ranges, follow redirects manually, timeouts, size caps).
@@ -28,6 +28,8 @@ Full design: `plan/SECURITY_DESIGN.md`. These are the rules every change must sa
 - Treat resume content, contact details, cover letters, form answers, email bodies and OAuth tokens as sensitive: never log them, never send them to analytics/Sentry, never include them in queue payloads (pass ids).
 - OAuth tokens: encrypt with the envelope-encryption helper (AES-256-GCM, AAD bound to owner); never return them to the client.
 - LLM calls: send only the data the task needs; untrusted text (resumes, job descriptions, web pages, inbound email) is wrapped as data, never instructions. LLMs get no tools that act externally.
+- Free-tier AI providers may retain inputs: **run `redact.ts` on resume text before every LLM call** (names, emails, phones, addresses, profile URLs). Contact fields are extracted locally, never by the LLM.
+- `/api/cron/*` endpoints require `Bearer CRON_SECRET` with constant-time comparison and accept no caller-supplied job data.
 
 ## Automation & email (product-safety rules)
 - No CAPTCHA solving, stealth plugins, fingerprint spoofing, or bypassing MFA/login/rate limits. Detection → stop and route to manual.

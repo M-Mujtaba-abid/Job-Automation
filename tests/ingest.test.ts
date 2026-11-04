@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { prepareJob, type PreparedJob } from "@/lib/ingest";
-import { deriveTitle, isHiringPost } from "@/lib/extract/post";
-import { isPublicHost, mapApifyItem } from "@/lib/sources/apify";
+import { prepareJob, type PreparedJob } from "@/legacy/ingest";
+import { deriveTitle, isHiringPost } from "@/legacy/extract/post";
+import { isPublicHost, mapApifyItem } from "@/legacy/sources/apify";
 import facebook from "./fixtures/facebook-items.json";
 import linkedin from "./fixtures/linkedin-items.json";
 

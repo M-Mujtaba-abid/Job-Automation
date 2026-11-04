@@ -1,0 +1,13 @@
+{
+  // Extra strictness for v2 code only (coding-standards: TypeScript). v1 code under src/legacy,
+  // src/app and src/components is checked by tsconfig.json until it is replaced in M6.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "incremental": false
+  },
+  "include": ["next-env.d.ts", "src/server/**/*.ts", "src/lib/**/*.ts", "src/features/**/*.ts", "src/features/**/*.tsx", "tests/unit/**/*.ts", "tests/stubs/**/*.ts"],
+  "exclude": ["node_modules"]
+}

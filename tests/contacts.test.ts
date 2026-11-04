@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractContacts, extractEmails, extractForms, extractPhones } from "@/lib/extract/contacts";
+import { extractContacts, extractEmails, extractForms, extractPhones } from "@/legacy/extract/contacts";
 
 const norm = (xs: { normalized: string }[]) => xs.map((x) => x.normalized);
 

@@ -92,7 +92,7 @@ Client side, update filters with `useRouter().replace(\`?${params}\`, { scroll: 
 ### Client Component boundary
 ```tsx
 "use client";
-// Only the interactive leaf is a client component; it receives DTOs, never Prisma objects.
+// Only the interactive leaf is a client component; it receives DTOs, never Drizzle rows.
 export function SaveJobButton({ jobId, saved }: { jobId: string; saved: boolean }) { /* … */ }
 ```
 
@@ -137,7 +137,7 @@ export const GET = route({ auth: "session" }, async (_req, { params, ctx }) => {
 - ❌ `"use client"` at page level "to make it work": move interactivity into leaves.
 - ❌ Reading `cookies()`/`headers()` inside a `"use cache"` scope, or caching per-user data in shared caches.
 - ❌ Synchronous `params.id` access (stale Next 14 pattern).
-- ❌ Business logic or Prisma calls inside `page.tsx`/`route.ts`.
+- ❌ Business logic or Drizzle/`db` calls inside `page.tsx`/`route.ts`.
 - ❌ Putting filters in `useState` only (not shareable, lost on reload).
 - ❌ Using `middleware.ts` (renamed to `proxy.ts` in this version).
 - ❌ Treating `proxy.ts` as authorization.

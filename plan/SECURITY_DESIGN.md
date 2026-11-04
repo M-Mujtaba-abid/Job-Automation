@@ -56,7 +56,7 @@ Trust boundaries: browser ↔ web; web ↔ workers (Redis); workers ↔ third-pa
 | Data | At rest | In transit |
 |---|---|---|
 | Database | provider encryption (Neon AES-256) | TLS (`sslmode=require`, verify-full where supported) |
-| OAuth tokens | **application-level envelope encryption**: AES-256-GCM with random 96-bit IV per value, data key wrapped by KMS (or `ENCRYPTION_MASTER_KEY` v1 with `tokenKeyVersion`); AAD = `userId:emailAccountId` to prevent row swapping | TLS |
+| OAuth tokens | **application-level envelope encryption**: AES-256-GCM with random 96-bit IV per value, data key wrapped by KMS (or, in the zero-cost profile, by the versioned env key `ENCRYPTION_MASTER_KEY_V1`, later `_V2`…, with the version stored in `tokenKeyVersion`); AAD = `userId:emailAccountId` to prevent row swapping | TLS |
 | Object storage | SSE (provider-managed keys; SSE-KMS where available) | TLS only |
 | Redis | provider encryption; payloads contain ids only, never PII/tokens | TLS (`rediss://`) |
 | Backups | provider-encrypted, PITR 7 days (Neon) | — |
@@ -72,7 +72,7 @@ Key rotation: new key version for new writes; background re-encrypt job; old ver
 ## 8. Secrets management
 - Platform secrets only in host secret stores (Vercel env, worker host secrets); `.env.local` for development only and git-ignored (already the case); `.env.example` documents names, never values.
 - Startup validation with Zod (v1 `lib/env.ts` pattern), **separate schemas for web and workers** so each process receives only what it needs (automation worker gets no mail OAuth client secret and no encryption key).
-- Distinct secrets per purpose: `AUTH_SECRET`, `CRON_SECRET`, `WEBHOOK_SECRET_<PROVIDER>`, `ENCRYPTION_MASTER_KEY` (v1 reused `CRON_SECRET` for webhooks; see §15).
+- Distinct secrets per purpose (names as in `.env.example`): `BETTER_AUTH_SECRET` (v2 session signing), `CRON_SECRET` (cron endpoints only), `WEBHOOK_SECRET_<PROVIDER>` (e.g. `WEBHOOK_SECRET_APIFY`), `ENCRYPTION_MASTER_KEY_V<n>` (envelope-encryption key versions, starting with `ENCRYPTION_MASTER_KEY_V1`). `AUTH_SECRET` is the **v1** JWT secret and is retired with v1 after M6; v2 code never reads it. (v1 reused `CRON_SECRET` for webhooks; see §15.)
 - Rotation runbook in `docs/guides/` (M12); gitleaks in CI and pre-commit.
 - Claude Code agents are denied reading `.env*` files (`.claude/settings.json`).
 
@@ -84,7 +84,7 @@ Key rotation: new key version for new writes; background re-encrypt job; old ver
 
 ## 10. Input validation & injection prevention
 - **Validation:** Zod at every boundary (ADR-003); strings length-capped; URLs parsed with `URL` and scheme-allowlisted (`https:` only for user-entered links); email via `z.email()`; enums for all categorical input.
-- **SQL injection:** Prisma parameterises queries; raw SQL only via tagged-template `$queryRaw`/TypedSQL. `$queryRawUnsafe`/`$executeRawUnsafe` are **banned** (ESLint rule). Dynamic `ORDER BY` columns chosen from an allowlist map.
+- **SQL injection:** the Drizzle query builder parameterises all values; raw SQL only via Drizzle's `sql` tagged template (``db.execute(sql`...`)``), whose interpolations are bound parameters. **`sql.raw()` with any non-constant input is banned** (ESLint/Semgrep rule); `sql.raw` is allowed only for string literals written in the source. Dynamic `ORDER BY` columns and directions are chosen from an allowlist map of Drizzle column objects; raw SQL references tables/columns via the Drizzle objects (`${jobs.title}`), never interpolated strings.
 - **SSRF:** server never fetches user-supplied URLs in M1–M8. Where fetching is needed (job URL import, automation): DNS-resolve and block private/link-local/metadata ranges (extend v1 `isPublicHost` to resolved IPs, IPv6, and redirects), allowlist schemes/ports, timeouts, size caps. Automation workers use host allowlists (AUTOMATION §3.1).
 - **Command injection:** no shell execution with user input; file conversion libraries run in-process.
 - **Path traversal:** storage keys generated server-side only.
@@ -135,7 +135,7 @@ Fields: actor, action, target, ip hash (HMAC with rotating salt), user agent, mi
 |---|---|
 | A01 Broken Access Control | §3 ownership scoping, NOT_FOUND policy, tenant tests |
 | A02 Cryptographic Failures | §6 envelope encryption, TLS everywhere |
-| A03 Injection | §10 Prisma params, banned unsafe raw, Zod |
+| A03 Injection | §10 Drizzle bound parameters, `sql.raw` with dynamic input banned, Zod |
 | A04 Insecure Design | two-phase automation approval, bounded LLM influence |
 | A05 Security Misconfiguration | CSP/headers, private buckets, env validation |
 | A06 Vulnerable Components | Dependabot/Renovate, `npm audit` + OSV in CI, pinned Playwright image |
@@ -148,7 +148,8 @@ Fields: actor, action, target, ip hash (HMAC with rotating salt), user agent, mi
 ## 17. Zero-cost profile specifics (ACTIVE, ADR-023)
 | Topic | Control |
 |---|---|
-| Free-tier AI data use | Gemini's unpaid-tier terms allow Google to use inputs/outputs to improve products, including human review. **Resume text is PII-redacted before every LLM call** (names, emails, phones, addresses, URLs → placeholders; contacts extracted locally with v1 `extractContacts`). Only the fields a task needs are sent. Users are told in the privacy notice and can disable AI parsing. Check Groq's current data policy and record it in `docs/setup/free-tier-limits.md`. |
+| Free-tier AI data use | Gemini's unpaid-tier terms allow Google to use inputs/outputs to improve products, including human review. **Resume text is PII-redacted before every LLM call** (names, emails, phones, addresses, URLs → placeholders; contacts extracted locally with v1 `extractContacts`). Only the fields a task needs are sent. Users are told in the privacy notice and can disable AI parsing. Groq's data policy is recorded in `docs/setup/free-tier-limits.md`; Groq lets every customer enable **Zero Data Retention** (Data Controls). |
+| Gemini free-tier terms: personal data and EEA/UK/CH (**decided 2026-11-04**, ADR-023 *Provider data-routing*) | The Gemini API unpaid terms say *"Do not submit sensitive, confidential, or personal information to the Unpaid Services"* and allow only Paid Services for API clients made available to users in the **EEA, UK or Switzerland**. PII redaction alone does not make resume text non-personal. **Owner decision (2026-11-04), enforced by `src/server/ai/router.ts`:** (1) Gemini free tier only for public/non-personal data: job descriptions, job embeddings, title/skill-list embeddings; (2) resume parsing and any user-authored text go to **Groq with Zero Data Retention enabled** (still redacted), or stay deterministic-only; (3) **no EEA/UK/Swiss beta users** while on the Gemini free tier (sign-up gating + terms). Groq Zero Data Retention must be enabled by the owner in the Groq console. |
 | Drain endpoint | `/api/cron/drain` requires `Authorization: Bearer CRON_SECRET` (constant-time compare, as v1 `verifyCronAuth`). It is rate-limited and idempotent, and accepts no job parameters from the caller. |
 | Files in Postgres | `ResumeFile.data` is never selected in list queries. Downloads go through an authenticated Route Handler with `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`. |
 | Rate limiting | Postgres store. Fail closed for auth and sends if the DB is unreachable (the app is down anyway). |
@@ -157,4 +158,4 @@ Fields: actor, action, target, ip hash (HMAC with rotating salt), user agent, mi
 | Google sign-in only | No passwords stored at launch, which removes password-reset and credential-stuffing surface. Account linking remains verified-email only. |
 
 ## 18. Incident response (summary)
-Severity matrix, on-call owner, Sentry alert routing, token-revocation playbook (rotate `ENCRYPTION_MASTER_KEY` version + force reconnect), breach notification within 72 h where GDPR applies. Full runbook in `docs/guides/incident-response.md` (M13).
+Severity matrix, on-call owner, Sentry alert routing, token-revocation playbook (add `ENCRYPTION_MASTER_KEY_V<n+1>`, re-encrypt, retire the old version, force reconnect), breach notification within 72 h where GDPR applies. Full runbook in `docs/guides/incident-response.md` (M13).

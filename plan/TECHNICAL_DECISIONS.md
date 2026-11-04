@@ -17,7 +17,7 @@ The repository is not empty. It contains a working **single-user** job-hunting t
 |---|---|---|
 | Framework | Next.js 16 App Router, React 19, TypeScript strict, `proxy.ts` (Next 16 replacement for `middleware.ts`) | **Yes**: same framework |
 | UI | Tailwind v4, shadcn/ui (new-york, `radix-ui`), lucide, sonner, TanStack Table | **Yes**: same design system |
-| DB | Neon Postgres via `@neondatabase/serverless`, **Drizzle ORM** (`lib/db/schema.ts`, 2 migrations) | Schema is replaced (single-tenant → multi-tenant), see ADR-004 |
+| DB | Neon Postgres via `@neondatabase/serverless`, **Drizzle ORM** (`lib/db/schema.ts`, 2 migrations) | ORM kept (ADR-004); schema is replaced (single-tenant → multi-tenant) by new tables in Postgres schema `app` (ADR-024) |
 | Auth | Single shared `APP_PASSWORD` → HS256 JWT cookie (`jose`), login rate limit table | **No**: replaced by real user accounts (ADR-005) |
 | Job source | Apify actors scraping LinkedIn / Facebook hiring posts, async runs + webhook + cron fallback collector | Pipeline pattern **yes**; LinkedIn/Facebook scraping **no** for SaaS (ADR-011) |
 | Extraction | `lib/extract/*`: email / phone (libphonenumber) / Google-Form extraction, hiring-post detection, dedupe hash. 34 Vitest tests with fixtures | **Yes**: ported as the deterministic layer of job parsing |
@@ -54,30 +54,45 @@ The repository is not empty. It contains a working **single-user** job-hunting t
 - **Decision:** `strict: true` plus `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` (enabled in M0; fix fallout). Zod v4 schemas validate: env, Server Action inputs, Route Handler bodies/queries, webhook payloads, third-party API responses, **and LLM structured outputs**. Schemas are the source of truth for types (`z.infer`).
 - **Alternatives:** Valibot (smaller bundle). Zod is already used in v1 and is supported by the Anthropic SDK's `zodOutputFormat` helper.
 
-## ADR-004: Prisma ORM on PostgreSQL (replacing Drizzle)
-- **Status:** Proposed (owner's stated preference; confirm before M0 schema work)
-- **Context:** v1 uses Drizzle. The v2 schema is a full rewrite regardless of ORM (multi-tenant, ~30 tables). The owner's preferred stack specifies Prisma.
-- **Decision:** Use Prisma (v7-line: `prisma.config.ts`, `prisma-client` generator with explicit `output`, driver adapters, i.e. `@prisma/adapter-neon` on serverless or `@prisma/adapter-pg` on workers). Verify exact config keys against the installed Prisma version's docs at M0.
-- **Why Prisma:** declarative schema that doubles as documentation, mature migration workflow (`migrate dev` / `migrate deploy`), relation-aware typed queries, strong team familiarity, schema readable by non-specialists (useful for agents).
+## ADR-004: Drizzle ORM on PostgreSQL (kept from v1)
+- **Status:** Accepted (owner decision, 2026-11-04). Supersedes the earlier *Proposed: Prisma* version of this ADR.
+- **Context:** v1 already uses Drizzle (`drizzle-orm ^0.45`, `drizzle-kit`, Neon serverless driver, `lib/db/`, migrations in `drizzle/`). The v2 schema is a full rewrite regardless of ORM (multi-tenant, ~30 tables), so the question was which toolchain to write it in. The original brief listed Prisma; the owner chose to keep Drizzle.
+- **Decision:**
+  - **Drizzle ORM + drizzle-kit** for all v2 data access, with the Neon serverless driver (`drizzle-orm/neon-serverless` + `Pool`, as v1 `lib/db/index.ts`; `drizzle-orm/neon-http` is acceptable for single-statement, non-transactional reads).
+  - v2 tables live in the Postgres schema **`app`** (ADR-024).
+  - **Layout:** schema files `src/server/db/schema/<domain>.ts` with barrel `src/server/db/schema/index.ts`; client `src/server/db/client.ts`; migrations stay in `drizzle/` (the v1 folder), generated with `drizzle-kit generate`. Migrations are applied with `drizzle-kit migrate` **only by the owner or CI**; `drizzle-kit push` is never used against shared databases.
+  - **Naming:** snake_case plural table names and snake_case columns (v1 convention); TypeScript property names camelCase. Ids are UUIDv7 generated app-side (`uuid("id").primaryKey().$defaultFn(uuidv7)`); timestamps `timestamp(..., { withTimezone: true })`; Postgres enums declared with `app.enum(...)` so they also live in schema `app`.
+  - **Expressed in schema code** (no hand-edited SQL needed): `halfvec`/`vector` columns, partial unique indexes (``uniqueIndex().on(...).where(sql`...`)``), `check()` constraints, HNSW indexes (`index().using("hnsw", t.embedding.op("halfvec_cosine_ops"))`), GIN indexes, expression indexes. `CREATE SCHEMA "app"` is emitted by drizzle-kit from `pgSchema("app")`. **Custom SQL migrations** (`drizzle-kit generate --custom`) remain only for `CREATE EXTENSION`, data backfills and anything drizzle-kit cannot diff. `DATABASE_DESIGN.md` §6 keeps the reference DDL.
+  - **Raw SQL:** Drizzle's parameterised `sql` tagged template (``db.execute(sql`...`)``) for `SKIP LOCKED` claims, vector queries and aggregates. **`sql.raw()` with any non-constant input is banned**; dynamic identifiers come from allowlist maps.
+  - **Errors:** unique violations are detected by Postgres SQLSTATE `23505` (on the driver error or its `cause`, since Drizzle wraps driver errors) and mapped to `AppError("CONFLICT")`.
+  - **Better Auth** uses its Drizzle adapter (`drizzleAdapter(db, { provider: "pg", ... })`, ADR-005).
+  - **Repositories unchanged:** every tenant query filters `and(eq(t.id, id), eq(t.userId, ctx.userId))`.
+- **Why Drizzle:**
+  - It is already installed, configured and in production use in v1. No new toolchain, and no Prisma binaries or generated-client step in the build.
+  - Native `vector`/`halfvec` column types and query helpers (`cosineDistance`), plus partial/HNSW/GIN indexes and CHECK constraints in TypeScript. Most of the hand-written SQL Prisma would have needed goes away.
+  - The SQL-like query builder makes the `SKIP LOCKED` claims, CTEs and keyset pagination clear, and the same builder covers CRUD and the complex queries. v1's double-apply partial index and claim queries are already written this way.
+  - Small runtime and no query engine, which suits Vercel serverless cold starts on the zero-cost profile.
 - **Costs, stated honestly:**
-  - **pgvector** is not a first-class Prisma type: columns are `Unsupported("vector(1024)")` and similarity queries require raw SQL (`$queryRaw` / TypedSQL). Drizzle supports `vector` natively. *Mitigation:* all vector SQL lives in one repository module (`src/server/modules/matching/vector-repository.ts`) with integration tests.
-  - Partial unique indexes (v1 used one for double-apply protection) and GIN/HNSW indexes must be added via hand-edited migration SQL. *Mitigation:* documented in `DATABASE_DESIGN.md` §6 and the `prisma-postgresql` skill.
-  - Porting v1 queries from Drizzle is a rewrite.
-- **Alternative:** Keep Drizzle (native pgvector, SQL-like API, zero migration cost for v1 code). This is a legitimate choice; if the owner prefers it, only `DATABASE_DESIGN.md` §5 (schema syntax) and the `prisma-postgresql` skill change. The entity model is ORM-independent.
+  - The schema is TypeScript, not a declarative DSL, so it is less readable at a glance for non-specialists. *Mitigation:* `DATABASE_DESIGN.md` §5 keeps a logical schema in readable notation plus a model → table mapping.
+  - drizzle-kit is still pre-1.0 (0.x). Diffs can mis-detect renames, and enum or `pgSchema` changes sometimes need manual review. *Mitigation:* always review generated SQL, run a migration smoke test in CI, and use expand → contract for renames.
+  - Relation queries (`db.query.*` with `relations()`) are less mature than Prisma's nested writes, so multi-table writes are explicit statements inside `db.transaction()`.
+  - App-side UUIDv7 generation needs a small dependency (e.g. `uuid` v7) until Postgres-native `uuidv7()` is available on Neon.
+- **Alternative considered: Prisma (v7 line, driver adapters).** It has a declarative schema that doubles as documentation, a mature `migrate dev`/`migrate deploy` workflow and nested relation writes. Rejected for this project because pgvector is not a first-class type there (`Unsupported(...)` columns and raw SQL for every vector read and write), partial unique, HNSW and GIN indexes need hand-edited migrations, it adds a second ORM and a generate step, and all v1 queries would have to be rewritten. Revisit only if the drizzle-kit migration workflow proves unreliable in practice.
+- **Reversibility:** medium. The entity model (`DATABASE_DESIGN.md`) is ORM-independent and all queries sit behind module repositories, so switching later would mean rewriting the repositories but no services.
 
-## ADR-005: Authentication with Better Auth (self-hosted, Prisma adapter)
+## ADR-005: Authentication with Better Auth (self-hosted, Drizzle adapter)
 - **Status:** Proposed
-- **Decision:** Better Auth with the Prisma adapter: email + password (Argon2id/scrypt), email verification, Google & Microsoft OAuth sign-in, database sessions (revocable), optional TOTP 2FA plugin, rate-limited auth endpoints.
+- **Decision:** Better Auth with the Drizzle adapter (`drizzleAdapter(db, { provider: "pg", schema })`, mapping its `user`/`session`/`account`/`verification` models to the Drizzle tables `app.users`, `app.sessions`, `app.accounts`, `app.verifications`; UUIDv7 id generation configured in Better Auth's advanced database options; verify option names against the installed version): email + password (Argon2id/scrypt), email verification, Google & Microsoft OAuth sign-in, database sessions (revocable), optional TOTP 2FA plugin, rate-limited auth endpoints.
 - **Alternatives:**
   - *Auth.js (NextAuth) v5:* long-running beta; the Auth.js project is now maintained by the Better Auth team, who recommend Better Auth for new projects.
   - *Clerk / WorkOS / Auth0:* fastest to ship and strong security posture, but per-MAU cost, user data outside our DB, and harder GDPR export/erasure joins. Revisit if B2B SSO becomes a requirement.
   - *Roll our own (v1 style):* rejected for multi-user (password reset, verification, session revocation, OAuth are all security-critical).
-- **Consequences:** Auth tables (`user`, `session`, `account`, `verification`) follow Better Auth's schema; our `User` model extends it.
+- **Consequences:** Auth tables (`app.users`, `app.sessions`, `app.accounts`, `app.verifications`) follow Better Auth's field set; our `User` model extends it with additional fields (`role`, `timezone`, `locale`, `deletionRequestedAt`) declared both in the Drizzle table and in Better Auth's `user.additionalFields`.
 
 ## ADR-006: Tenancy model: per-user tenancy, global job catalog
 - **Status:** Accepted
 - **Decision:** The tenant is the **User** (B2C). Every user-owned row carries `userId` and is accessed only through repository functions that take a `userId` from the authenticated session. Job catalog tables (`Company`, `Job`, `JobSource`, `JobSkill`, `JobApplyChannel`) are **global and shared**: a job is ingested, parsed and embedded once, then matched per user. This is the single biggest cost lever for AI spend.
-- **Isolation enforcement:** (1) scoped repository API (no unscoped `findMany` on tenant tables, lint rule in M0); (2) integration tests that assert cross-tenant access returns NOT_FOUND; (3) **Deferred:** Postgres Row-Level Security as defense in depth (M12), set via `set_config('app.user_id', …)` inside a transaction.
+- **Isolation enforcement:** (1) scoped repository API (no unscoped `select`/`update`/`delete` on tenant tables; `db` importable only from repositories, lint rule in M0); (2) integration tests that assert cross-tenant access returns NOT_FOUND; (3) **Deferred:** Postgres Row-Level Security as defense in depth (M12), set via `set_config('app.user_id', …)` inside a transaction.
 - **Not now:** `Organization`/workspace entity (career coaches, agencies). Kept as a future seam: tenant scoping goes through one `TenantContext` type so it can be widened later.
 
 ## ADR-007: Background processing with BullMQ on Redis
@@ -147,7 +162,7 @@ The repository is not empty. It contains a working **single-user** job-hunting t
 
 ## ADR-015: Secrets & sensitive-data encryption
 - **Status:** Accepted
-- **Decision:** Platform secrets in the host's secret manager (Vercel/Railway env), validated at boot with Zod (pattern from v1 `lib/env.ts`). Per-user secrets (OAuth tokens) use **envelope encryption**: AES-256-GCM data key per record, data key wrapped by a KMS key (AWS KMS / GCP KMS) or, initially, by `ENCRYPTION_MASTER_KEY` with key-version ids to support rotation. Plaintext tokens never logged, never sent to the client, never sent to LLMs.
+- **Decision:** Platform secrets in the host's secret manager (Vercel/Railway env), validated at boot with Zod (pattern from v1 `lib/env.ts`). Per-user secrets (OAuth tokens) use **envelope encryption**: AES-256-GCM data key per record, data key wrapped by a KMS key (AWS KMS / GCP KMS) or, initially, by versioned env keys `ENCRYPTION_MASTER_KEY_V1`, `_V2`, … (key-version id stored with each ciphertext) to support rotation. Plaintext tokens never logged, never sent to the client, never sent to LLMs.
 
 ## ADR-016: Billing through a provider abstraction; provider choice depends on legal entity
 - **Status:** Deferred. No paid plans in the zero-cost profile (Vercel Hobby is non-commercial); Milestone 11 deferred (ADR-023)
@@ -181,7 +196,7 @@ src/
   components/shared/      # app-wide composites (DataTable, EmptyState, PageHeader…)
   features/<feature>/     # feature UI: components/, hooks/, actions.ts ("use server", thin)
   server/                 # server-only code (import "server-only")
-    db/                   # Prisma client, transaction helpers
+    db/                   # Drizzle client (client.ts), schema/<domain>.ts + schema/index.ts (ADR-004/024), tx helpers
     auth/                 # Better Auth config, session + authorization helpers
     modules/<domain>/     # domain logic: service.ts, repository.ts, schemas.ts, types.ts, index.ts
     ai/                   # Claude client, prompts/ (versioned), output schemas, embeddings
@@ -191,10 +206,10 @@ src/
   lib/                    # isomorphic utilities (no server imports)
   workers/                # worker entry points: general.ts, automation.ts, processors/
   legacy/                 # v1 code until M6 (no new imports from v2)
-prisma/                   # schema.prisma, migrations/
+drizzle/                  # drizzle-kit migrations (v1 history + v2 `app` schema migrations), meta/
 tests/                    # unit/, integration/, e2e/, evals/, fixtures/
 ```
-- **Boundary rules:** `app/` and `features/` call `server/modules/*/index.ts` only; modules never import another module's repository; cross-module async effects go through queues; `server/` is never imported by client components (enforced with `server-only` + ESLint `no-restricted-imports`).
+- **Boundary rules:** `app/` and `features/` call `server/modules/*/index.ts` only; modules never import another module's repository; cross-module async effects go through queues; `server/` is never imported by client components (enforced with `server-only` + ESLint `no-restricted-imports`). The Drizzle `db` client is importable only from `src/server/db/**` and `**/repository.ts` / `**/*-repository.ts` (ESLint `no-restricted-imports`); schema table objects may be imported by repositories and by `src/server/db/**`.
 
 ## ADR-022: Domain modules
 - **Status:** Accepted
@@ -209,13 +224,13 @@ tests/                    # unit/, integration/, e2e/, evals/, fixtures/
 | Concern | Scale profile (original) | **Zero-cost profile (active)** | Free-tier constraints to design around |
 |---|---|---|---|
 | Web hosting | Vercel Pro | **Vercel Hobby** | personal/non-commercial use only; cron jobs at most once/day; per-function duration and monthly usage limits |
-| Database | Neon paid | **Neon Free** | small storage quota (≈0.5 GB), monthly compute allowance, auto-suspend → keep data small; never poll the DB continuously |
-| Background jobs | BullMQ + Redis + worker containers | **Postgres `BackgroundJob` table** claimed with `FOR UPDATE SKIP LOCKED` (v1's queue pattern), drained by time-boxed serverless runs: (1) `after()` kick right after the triggering request, (2) **cron-job.org** (free) calling `/api/cron/drain` every 5–15 min with `CRON_SECRET` (v1 already uses cron-job.org), (3) Vercel daily cron as backstop | each drain run stops after ~45 s; handlers idempotent; `notBefore` for delays/retries |
+| Database | Neon paid | **Neon Free** | storage **1 GB per project** (writes blocked when full); **100 CU-hours/month per project, shared by all branches** (≈ 400 h at 0.25 CU; v1, v2 and the dev branch all draw from it; when it runs out, compute is suspended until next month); compute auto-suspends only after **5 idle minutes** and every query wakes it → keep data small, never poll the DB continuously, keep scheduled pings sparse (see *Neon compute budget*) |
+| Background jobs | BullMQ + Redis + worker containers | **Postgres `BackgroundJob` table** claimed with `FOR UPDATE SKIP LOCKED` (v1's queue pattern), drained by time-boxed serverless runs: (1) `after()` kick right after the triggering request (the main path for user-triggered work), (2) **cron-job.org** (free) calling `/api/cron/drain` **every 30 min by default** (configurable in the cron-job.org job settings) with `CRON_SECRET` (v1 already uses cron-job.org), (3) Vercel daily cron as backstop | cron-job.org **times out after 30 s** and **disables a job after more than 25 consecutive failures**, so the synchronous drain budget is **`DRAIN_TIME_BUDGET_MS = 20000`**: the endpoint returns its summary within ~20 s and may continue via `after()` within the Vercel function duration limit; handlers idempotent; `notBefore` for delays/retries |
 | Rate limiting | Redis | **`rate-limiter-flexible` with Postgres store** (`RateLimitBucket` table) | small write overhead; acceptable at beta scale |
 | Worker host | Railway / Fly / Render | **none** | heavy work must fit in serverless time limits (chunked jobs) |
 | Browser automation | `worker-automation` container | **local runner on the owner's PC** (`npm run automation:runner`), polling Neon for approved tasks only while running | assisted apply available to the owner only; other beta users get the manual-apply answer sheet |
 | Resume files | R2 / S3 | **Postgres `ResumeFile.data bytea`** (v1 approach), 4 MB cap, max 3 versions kept per resume | counts toward DB storage budget |
-| LLM | Claude (Anthropic API) | **`LlmProvider` interface: Gemini API free tier (primary), Groq free tier (fallback)**; Claude adapter optional later | per-model requests/minute and requests/day limits; **free-tier inputs may be used by the provider** (Gemini's unpaid-service terms allow use for product improvement and human review) → PII redaction mandatory |
+| LLM | Claude (Anthropic API) | **`LlmProvider` interface: Gemini API free tier (primary), Groq free tier (fallback)**; Claude adapter optional later | per-model requests/minute and requests/day limits; **free-tier inputs may be used by the provider** (Gemini's unpaid-service terms allow use for product improvement and human review) → PII redaction mandatory; Gemini's unpaid terms also say **not to submit sensitive, confidential or personal information** and **require paid services for users in the EEA/UK/Switzerland** → see *Provider data-routing* below (decided: personal data → Groq only) |
 | Embeddings | Voyage AI, `vector(1024)` | **Gemini embedding model (free tier), 768 dimensions, stored as `halfvec(768)`** | daily request limits → embed each job once, batch requests; keyword-only fallback |
 | Sign-in | Better Auth: email/password + Google + Microsoft | **Better Auth with Google sign-in only** at launch (no system email needed) | email/password added when a free email channel exists |
 | System email | Resend / Postmark | **none at launch**: in-app notifications; optional free tier (Brevo, or Resend with an owned domain) later | Resend requires an owned domain to email other people |
@@ -228,20 +243,38 @@ tests/                    # unit/, integration/, e2e/, evals/, fixtures/
 
 > Free-tier quotas and model names change frequently. M0 records the **current** limits (with source links and date) in `docs/setup/free-tier-limits.md`; code reads limits from config, never hard-codes them.
 
-### Storage budget (Neon Free)
+### Storage budget (Neon Free, 1 GB per project)
+The current limit is **1 GB per project** (`docs/setup/free-tier-limits.md`, checked 2026-11-04). This ADR earlier assumed ≈0.5 GB. The budget below is deliberately kept as conservative as before, aiming to stay under ~0.5 GB. The limit is read from config, not hard-coded.
+
 | Data | Estimate | Rule |
 |---|---|---|
 | Active jobs | ~6 KB text + 1.5 KB `halfvec(768)` ≈ 8 KB/job | cap ~15–20K active jobs; `EXPIRED` after 30 days unseen, hard-deleted after 60 days unless referenced; **no `raw` payload storage** (or ≤ 7 days) |
 | Resume files | ≤ 4 MB each, typically 100–300 KB | max 3 versions per resume; older versions' bytes deleted (metadata kept) |
 | Matches | ~1 KB/row | keep top 200 NEW/SEEN matches per user; prune the rest |
 | Logs/runs | small | `JobSourceRun` & `BackgroundJob` (done) pruned after 14 days |
-A daily maintenance job reads `pg_database_size()` and raises an admin notification at 70% of the quota.
+A daily maintenance job reads `pg_database_size()` and raises an admin notification at **70% of the configured limit** (≈ 700 MB of 1 GB). Neon blocks writes when storage is full, so the alert must fire well before that.
+
+### Neon compute budget
+- Compute suspends only after 5 idle minutes, and every request wakes it. A drain call every 10 min would keep the database awake about half the time (≈ 360–450 h/month). That is near or over the ≈ 400 h allowance shared by v1, v2 and the dev branch.
+- Therefore the cron-job.org drain runs **every 30 min by default** (configurable). User-triggered work (resume parsing, re-matching after profile edits, sends) relies on the `after()` kick, not on the cron. The Vercel daily cron runs maintenance.
+- When no job is due, the drain exits after one indexed query. Nothing else polls the database; the local automation runner polls only while the owner has started it.
+- During the beta, check the month's CU-hours in the Neon console weekly. If usage passes 70% of the allowance, lengthen the cron interval first.
 
 ### AI budget & degradation
 - Daily request budgets per provider/model come from config (set just below the free limits). Every call is metered in `UsageRecord` (`provider`, `model`, tokens).
 - Priority when budget is tight: (1) user-triggered resume parsing, (2) explanations for top matches, (3) bulk job parsing. Exhausted budget → job deferred to the next day (`notBefore`), UI shows deterministic data.
 - **Deterministic-first is stricter here:** job descriptions go to the LLM only when deterministic extraction (v1 `lib/extract/*` + skill taxonomy) finds fewer than 3 skills or no seniority.
-- Fallback order per call: Gemini → Groq → deterministic-only. Provider 429 responses honour retry hints and trip a short circuit breaker.
+- Fallback order per call: Gemini → Groq → deterministic-only. Provider 429 responses honour retry hints and trip a short circuit breaker. Per the owner's data-routing decision below, this order applies only to public/non-personal tasks; personal tasks use Groq only, then deterministic-only.
+
+### Provider data-routing (DECIDED by the owner, 2026-11-04)
+The Gemini API unpaid-service terms (checked 2026-11-04, quoted in `docs/setup/free-tier-limits.md`) say: *"Do not submit sensitive, confidential, or personal information to the Unpaid Services."* They also allow only Paid Services for API clients made available to users in the **EEA, UK or Switzerland**. PII redaction lowers the risk, but a redacted resume is still personal data.
+
+**Decision (owner, 2026-11-04): the recommended routing below is accepted.** It is enforced in code: each task declares `dataClass: "public" | "personal"`, providers declare `allowsPersonalData`, and `src/server/ai/router.ts` never sends personal data to a provider that disallows it (unit-tested).
+1. **Gemini free tier only for public/non-personal data:** job-description parsing, job embeddings, and embeddings of title/skill lists.
+2. **Resume parsing** (and any task whose input comes from a user's resume or answers) goes either to **Groq with Zero Data Retention enabled** (Groq console → Data Controls), still PII-redacted, or stays **deterministic-only** (v1 extractors + skill taxonomy, user reviews the result).
+3. **No beta users in the EEA/UK/Switzerland** while the Gemini free tier is in use (sign-up country gating + terms).
+
+Implemented chains (`src/server/ai/index.ts`, defaults verified live 2026-11-04): **public** → Gemini `gemini-3.5-flash-lite`, fallback Groq `openai/gpt-oss-20b`; **personal** → Groq `openai/gpt-oss-120b` only (no Gemini fallback; deterministic-only if Groq fails); **embeddings** (public text only: job documents, target titles, skill lists) → `gemini-embedding-2` at 768 dims. **Owner action:** enable Zero Data Retention in the Groq console (Settings → Data Controls). Point 3 (no EEA/UK/CH beta users) is enforced at sign-up in M1.
 
 ### Privacy safeguards specific to free tiers
 1. **Redact before sending:** resume text is stripped of names, emails, phone numbers, street addresses and profile URLs (deterministic extraction from v1 `extractContacts` + placeholders) before any LLM call; contact fields are filled locally, never by the LLM.
@@ -252,7 +285,22 @@ A daily maintenance job reads `pg_database_size()` and raises an admin notificat
 - Capacity: comfortable for the owner and roughly a few dozen beta users; background work is best-effort (minutes, not seconds).
 - Features limited in this profile: assisted ATS submission (owner only via local runner), Outlook, system emails, paid plans.
 - **Upgrade triggers** (move a component to the scale profile): sustained > 50 active users, wanting to charge money, free quotas hit on most days, or Neon storage > 70%.
-- If "Grok" (xAI) is preferred over Groq, it is added as another `LlmProvider` adapter; check whether xAI currently offers any free API credits.
+- LLM fallback provider is **Groq** (groq.com, free tier), confirmed by the owner on 2026-11-04. It is not xAI's Grok. Any further provider is just another `LlmProvider` adapter and needs an ADR amendment.
+
+## ADR-024: v2 tables in a dedicated Postgres schema `app`
+- **Status:** Accepted (2026-11-04, follows from ADR-004)
+- **Context:** v1 and v2 share one Neon database: the M6 import needs both datasets side by side, and one project means a single storage quota and compute allowance to watch (Neon Free limits are per project, ADR-023). v1 owns these tables in `public`: `jobs`, `applications`, `sources`, `settings`, `job_contacts`, `fetch_runs`, `email_templates`, `cv_file` and others. With the snake_case plural naming from ADR-004, v2 would want several of the same names (`jobs`, `applications`). Both schemas are managed by the same drizzle-kit setup until v1 is removed after M6.
+- **Decision:**
+  - All v2 tables, enums and indexes are declared with `export const app = pgSchema("app")`, using `app.table(...)` and `app.enum(...)`, in `src/server/db/schema/*.ts`. The v1 tables stay in `public` (`lib/db/schema.ts`), unchanged.
+  - drizzle-kit config covers both: `schema: ["./lib/db/schema.ts", "./src/server/db/schema/index.ts"]`, `schemaFilter: ["public", "app"]`, `out: "./drizzle"`. drizzle-kit emits `CREATE SCHEMA "app"` itself (so no custom migration may create it). The first v2 migration is a custom migration that creates only the extensions (`vector`, `pg_trgm`, `citext`) in `public`, so that types such as `public.halfvec` and `public.citext` are visible from both schemas.
+  - Connections keep the default `search_path` (`"$user", public`). Drizzle always schema-qualifies `app.*` tables, so v2 code never depends on `search_path`. Raw SQL in repositories uses the table objects (`${jobs}`) or explicit `app.` qualification, never bare v2 table names.
+  - The **M6 import** is plain SQL between schemas (`INSERT INTO app.jobs (...) SELECT ... FROM public.jobs ...`), run as a reviewed, idempotent script in a transaction. No dump/restore and no cross-database link.
+  - After the M6 cut-over, v1 `public` tables are dropped in a separate, owner-approved migration (destructive). `app` stays the v2 home, so no rename is needed later.
+- **Alternatives considered:**
+  - *Prefix v2 tables (`v2_jobs`) in `public`:* ugly names that would have to be renamed again after v1 is gone, and it is easy to query the wrong table by mistake.
+  - *Separate Neon database, branch or project for v2:* clean isolation, but the M6 import then needs dump/restore or a foreign data wrapper. A branch also shares the project's compute allowance, and a second project means two quotas to monitor.
+  - *Reuse v1 tables in place:* already rejected in ADR-001 (single-tenant assumptions).
+- **Consequences:** Postgres RLS policies (M12, ADR-006) and grants are set on schema `app`. Tests and the tenancy meta-test enumerate tables of schema `app` only. Any SQL tool or console session must qualify `app.` (or `SET search_path = app, public`). The decision is reversible, since `ALTER TABLE ... SET SCHEMA` is cheap at our data size.
 
 ---
 
@@ -263,7 +311,8 @@ A daily maintenance job reads `pg_database_size()` and raises an admin notificat
 | Next.js App Router, React, TS, Tailwind, shadcn/ui | **Keep** | Already in v1; fits SSR dashboard + marketing |
 | Server Actions + Route Handlers | **Keep** | Actions for UI mutations; handlers for webhooks/OAuth/files |
 | PostgreSQL (Neon) | **Keep** | Relational core, `SKIP LOCKED`, full-text, pgvector |
-| Prisma | **Adopt (proposed)** | See ADR-004 trade-offs |
+| Drizzle ORM + drizzle-kit | **Keep** (already in v1) | ADR-004; v2 tables in schema `app` (ADR-024) |
+| `uuid` (v7 generator) | **Adopt in M0** | App-side UUIDv7 ids (ADR-004); tiny, no runtime services |
 | pgvector | **Adopt in M4** | Avoids a separate vector DB until > ~10M vectors; HNSW is sufficient |
 | Dedicated vector DB (Pinecone, Qdrant) | **Reject for now** | Extra infra and data-sync; revisit only on measured pgvector limits |
 | Anthropic Claude API | **Adopt in M2** | Parsing, explanations, cover letters |
@@ -286,8 +335,10 @@ A daily maintenance job reads `pg_database_size()` and raises an admin notificat
 
 Resolved on 2026-11-04 by ADR-023 (zero-cost profile): hosting (Vercel Hobby), database (Neon Free), AI providers (Gemini/Groq free tiers), worker host and object storage (none), billing (deferred), auth provider (Better Auth, free, Google sign-in first).
 
+Resolved on 2026-11-04 by the owner: **ORM** is Drizzle, kept from v1 (ADR-004), with v2 in schema `app` (ADR-024). **LLM fallback** is Groq (groq.com), not xAI Grok (ADR-023).
+
+Resolved on 2026-11-04 by the owner: **free-tier AI data routing**: personal data → Groq (ZDR) only; Gemini free tier for public data only (ADR-023 *Provider data-routing*).
+
 Still open:
-1. **ORM:** Prisma (ADR-004, from the original brief) vs keeping v1's Drizzle. Both are free; Drizzle means less migration work and native pgvector/halfvec support.
-2. **Primary LLM provider:** Gemini (primary) + Groq (fallback) is the default. Confirm "Grok" meant Groq, not xAI Grok.
-3. **Launch markets:** Pakistan-first (as v1) or global? Affects job sources, salary currency handling, and data-protection law.
-4. **Fate of v1 LinkedIn/Facebook scraping** for the owner's personal use (ADR-011).
+1. **Launch markets:** Pakistan-first (as v1) or global? Affects job sources, salary currency handling, and data-protection law.
+2. **Fate of v1 LinkedIn/Facebook scraping** for the owner's personal use (ADR-011).

@@ -21,12 +21,13 @@
 | A11 | `README.md` v2 pointer (v1 content preserved), `.env.example` planned-variable names appended (commented out, no values), `.gitignore` v2 entries | COMPLETED | Manual diff review: additions only, v1 content unchanged |
 | A12 | Technology evaluation & ADRs (22 ADRs + necessity review + open questions) | COMPLETED | `TECHNICAL_DECISIONS.md` |
 | A13 | Final verification run | COMPLETED | Verification script result recorded in the initialization report; all checks pass after fixes |
+| A14 | Zero-cost profile (owner decision 2026-11-04): ADR-023 + substitutions across plan docs, schema additions (`BackgroundJob`, `RateLimitBucket`, `ResumeFile`, `halfvec(768)`), new `llm-integration` skill, updated rules/agents/CLAUDE.md/settings/`.env.example`/setup docs | COMPLETED | Verification script re-run after the changes (8 skills, schema checks incl. new models); see change log |
 
 ## Part B: Application milestones
 
 | Milestone | Status | Notes |
 |---|---|---|
-| M0 Project Foundation | NOT STARTED | Next milestone. Task 5 (Prisma toolchain) is blocked on the ORM decision (ADR-004) |
+| M0 Project Foundation | IN PROGRESS | Started 2026-11-04. Tasks 1–3, 6, 9 completed; 4, 5, 7, 8, 10 in progress (tracker below) |
 | M1 Authentication & User Management | NOT STARTED | Depends on M0; auth provider confirmation (ADR-005) |
 | M2 Resume Upload & AI Parsing | NOT STARTED | |
 | M3 Job Aggregation | NOT STARTED | Source licences/terms review needed per source (ADR-011) |
@@ -37,22 +38,24 @@
 | M8 Email Integration | NOT STARTED | Google/Microsoft OAuth app verification lead time |
 | M9 Browser Automation | NOT STARTED | Staged rollout M9a/b/c |
 | M10 Notifications & Background Jobs | NOT STARTED | |
-| M11 Subscription & Billing | NOT STARTED | Billing provider decision (ADR-016) required first |
+| M11 Subscription & Billing | BLOCKED | Deferred by owner decision: zero-cost profile has no paid plans and Vercel Hobby is non-commercial (ADR-023). Unblock when an upgrade trigger is hit + ADR-016 resolved |
 | M12 Testing, Security & Optimization | NOT STARTED | |
 | M13 Production Deployment | NOT STARTED | |
 
 ### M0 task tracker
-| # | Task (DEVELOPMENT_ROADMAP M0) | Status | Notes |
+| # | Task (DEVELOPMENT_ROADMAP M0) | Status | Evidence / notes |
 |---|---|---|---|
-| 1 | `git init` + first commit + remote | NOT STARTED | Verify `.env.local` stays untracked |
-| 2 | `npm ci`, confirm v1 build/test/lint/typecheck, read bundled Next docs | NOT STARTED | `node_modules` currently incomplete |
-| 3 | Restructure to `src/` (v1 → `src/legacy/`) | NOT STARTED | |
-| 4 | TS strictness + ESLint boundaries + Prettier | NOT STARTED | |
-| 5 | Prisma toolchain + Docker Compose | BLOCKED | Awaiting owner confirmation of ADR-004 (Prisma vs Drizzle) |
-| 6 | Env validation split (web/worker) | NOT STARTED | |
-| 7 | Core libs (errors, wrappers, logger, Sentry, headers/CSP report-only) | NOT STARTED | |
-| 8 | CI pipeline | NOT STARTED | Needs git remote |
-| 9 | Worker skeleton + Dockerfile | NOT STARTED | Host choice (ADR-008) affects deploy config only |
+| 1 | Git repository + first commit + remote | COMPLETED | Repo already existed (commit `406ebb7`, remote `github.com/M-Mujtaba-abid/Job-Automation`). Verified 2026-11-04: `.env.local`/`.env` ignored, no env/secret files in any commit (`git log --all --name-only`) |
+| 2 | `npm ci`, confirm v1 build/test/lint/typecheck, read bundled Next docs | COMPLETED | `npm ci` repaired node_modules; v1 baseline: 39/39 tests, lint, typecheck, build all passed; bundled docs read (src folder, proxy, `after()`) |
+| 3 | Restructure to `src/` (v1 → `src/legacy/`) | COMPLETED | `app`→`src/app`, `components`→`src/components`, `lib`→`src/legacy` (`@/legacy/*`), `lib/utils`→`src/lib`, `proxy.ts`→`src/proxy.ts`; `@/*`→`./src/*`. After the move: tests, lint, typecheck, build pass; local smoke test (`next start`): login 200, unauthenticated /jobs → 307 /login |
+| 4 | TS strictness + ESLint boundaries + Prettier | IN PROGRESS | Done: `tsconfig.strict.json` (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride) for v2 code + `npm run typecheck:strict` (passes). **Deviation:** v1 code is excluded (53 errors, all in code deleted in M6). ESLint rules (no `@/legacy` in v2, `db` only in repositories/queue, `sql.raw` banned, no `@/server` in UI/isomorphic code) verified with a probe file. Not done: Prettier |
+| 5 | Drizzle toolchain + Docker Compose (Postgres + pgvector) | IN PROGRESS | Done: `drizzle.config.ts` (v1 + v2 schemas, `schemaFilter: public, app`), `src/server/db/client.ts`, `schema/_shared.ts`, migration `0002_app_platform_queue` (CREATE SCHEMA app + background_jobs + rate_limit_buckets), `npm run db:check` passes. **Applied to the main Neon database on 2026-11-04 with the owner's explicit approval** (pre-check: v1's 2 migrations recorded; v1 `public` tables untouched). Neon: Postgres 18.6, pgvector 0.8.6 available (not yet installed, M4). Not done: Docker Compose |
+| 6 | Env validation (web / drain) | COMPLETED | `src/server/lib/env.ts` (Zod, lazy, names-only errors). Local-runner env is added with M9 |
+| 7 | Core libs (errors, wrappers, logger, Sentry free, headers/CSP report-only) | IN PROGRESS | Done + unit-tested: `AppError`/`toActionError` (no internal message leaks, fixes F2), `ActionResult`, redacting JSON logger, `uuidv7`, constant-time cron auth, security headers + request id + CSP report-only in `proxy.ts` (smoke-tested). Not done: `authedAction`/`route()` wrappers (need M1 auth), Sentry (needs DSN) |
+| 8 | CI pipeline (GitHub Actions free minutes) | IN PROGRESS | `.github/workflows/ci.yml` written (lint, typecheck, strict typecheck, tests, db:check, build, prod audit, gitleaks); all steps pass locally except gitleaks (not installed locally). Not yet run on GitHub (changes not pushed) |
+| 9 | `BackgroundJob` queue + `/api/cron/drain` + `after()` kick + cron-job.org + `free-tier-limits.md` | COMPLETED | Postgres `JobQueue` (SKIP LOCKED claim, retry/backoff, defer, dedupe, stale release, prune), time-boxed `drain()`, daily maintenance handler, `kickDrain()` via `after()`, `GET /api/cron/drain` (401 without/with wrong secret, smoke-tested), Vercel daily backstop cron, `docs/setup/free-tier-limits.md`. Verified: 7 unit tests + **5 integration tests against real Neon** (`npm run test:integration`: dedupe, priority, 4 concurrent claimers never share a job, retry→DEAD, defer, stale release). **Owner action:** create the cron-job.org job (every 30 min) per `docs/setup/third-party-accounts.md` |
+| 10 | Provider seams with fakes (`LlmProvider` Gemini/Groq, `EmbeddingProvider`, `FileStore`, `RateLimiter`, `Mailer`) | IN PROGRESS | Done: `LlmProvider` (Gemini, Groq, fake), `EmbeddingProvider` (Gemini, fake), router with **data-class policy** (personal → Groq only), Zod validation, fallback, error mapping: 10 unit tests; **live-verified with the owner's keys** (`npm run ai:smoke`: Gemini job extraction, Groq resume-style extraction, gemini-embedding-2 768-dim unit vectors). Fixed a live-found bug (string[] → single embedding). Not done: `FileStore`, `RateLimiter`, `Mailer` |
+| — | Security: dependency vulnerabilities | COMPLETED | `npm audit` found **critical** Next.js 16.3.8 RCE (GHSA-2464-fhr4-w9xw etc.), high Zod, moderate Nodemailer. Upgraded to next 16.4.5, zod 4.6.7, nodemailer 10.3.1 (floors raised in package.json); prod audit now 0. **The live v1 deployment stays vulnerable until this is deployed.** 20 moderate dev-only advisories remain (esbuild via drizzle-kit, minimatch): not shipped, need breaking upgrades |
 
 ## Existing v1 functionality (legacy, not part of v2 status)
 v1 features (Apify ingest, contact extraction, bulk email, WhatsApp/Form links, tracking) exist in code at the repo root. **Not re-verified in this session:** `node_modules` is incomplete, so `npm test`/`build` were not run. Verification is M0 task 2.
@@ -67,14 +70,21 @@ v1 features (Apify ingest, contact extraction, bulk email, WhatsApp/Form links, 
 | R5 | Prompt injection via job descriptions/resumes | Medium | Medium | Delimited data, bounded influence, evidence checks, injection eval set | ai-engineer / security-auditor |
 | R6 | Cross-tenant data leak | Low | Critical | Scoped repositories, tenancy test registry, optional RLS | security-auditor |
 | R7 | Billing provider unavailable for owner's jurisdiction | High (if PK entity) | High | ADR-016 abstraction; MoR or entity decision before M11 | owner |
-| R8 | Prisma + pgvector friction (raw SQL) | Medium | Low | Isolated vector repository; Drizzle alternative documented | database-architect |
+| R8 | Drizzle API drift (written from 0.45 knowledge) | Low | Low | APIs verified against installed drizzle-orm 0.45.3; `db:check` in CI | database-architect |
 | R9 | Next.js 16 API drift vs agent knowledge | Medium | Medium | Mandatory reading of bundled docs; skills updated when docs differ | all |
 | R10 | Regulatory scrutiny of automated profiling/applications (GDPR Art. 22, local law) | Low | High | Human-in-the-loop, explanations, DPIA, legal review before launch | owner |
+| R11 | Free-tier limits shrink or terms change (Vercel, Neon, Gemini, Groq, cron-job.org) | Medium | High | Limits in config, provider fallback chain, deterministic degradation, `free-tier-limits.md` reviewed monthly, scale-profile adapters as exit path | architect |
+| R12 | Free-tier AI providers retain/review inputs (privacy) | High | Medium | Mandatory PII redaction, minimal fields, user disclosure + opt-out of AI parsing | security-auditor |
+| R13 | Neon Free storage exhausted | Medium | High | ADR-023 storage budget, `halfvec`, no raw payloads, pruning jobs, 70% alert | database-architect |
+| R14 | Background work delayed (cron pinger outage, time-boxed runs) | Medium | Low | `after()` kicks, daily Vercel cron backstop, idempotent chunked jobs | backend-specialist |
 
 ## Open questions (owner)
-See `TECHNICAL_DECISIONS.md` → "Open questions": ORM, auth provider, billing provider/legal entity, AI model routing for bulk parsing, worker host & storage, launch markets, future of v1 scrapers.
+See `TECHNICAL_DECISIONS.md` → "Open questions". Resolved: hosting, database, AI providers, worker host, storage, billing (deferred) by ADR-023; ORM = Drizzle (ADR-004) with schema `app` (ADR-024); Groq confirmed; AI data routing decided (personal data → Groq only). Still open: launch markets, future of v1 scrapers.
 
 ## Change log
 | Date | Change |
 |---|---|
 | 2026-11-04 | Initialization phase: Part A completed and verified; all application milestones NOT STARTED |
+| 2026-11-04 | M0: migration 0002 applied to Neon (owner-approved), queue integration-tested on real Postgres, AI layer live-verified (Gemini + Groq + embeddings), data routing decided (personal → Groq) |
+| 2026-11-04 | M0 started: tasks 1–3 and 6 completed, security upgrade of next/zod/nodemailer, v2 foundation (queue, drain, env, errors, logger, headers, CI) in progress (see tracker) |
+| 2026-11-04 | Owner chose zero-cost operation (Vercel Hobby, Neon Free, Gemini/Groq free tiers): ADR-023 added and docs/config updated (A14); M11 deferred (BLOCKED) |

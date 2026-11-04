@@ -1,7 +1,9 @@
 ---
 name: claude-ai-integration
-description: Project conventions for calling Claude (Anthropic TypeScript SDK) - single client wrapper, versioned prompts with Zod structured outputs (messages.parse + zodOutputFormat), model/effort config, PDF document input, prompt caching, Batches API, refusal handling, usage metering, prompt-injection defenses, embeddings provider, and AI evals. Use when adding or changing any LLM call, prompt, output schema, embedding, or AI evaluation.
+description: Conventions for the OPTIONAL paid Claude (Anthropic TypeScript SDK) adapter of the LlmProvider layer - messages.parse + zodOutputFormat structured outputs, model/effort config, PDF document input, prompt caching, Batches API, refusal handling, metering. Use only when implementing or changing the Claude adapter (scale profile). For normal AI work in the active zero-cost profile (Gemini/Groq) use the llm-integration skill.
 ---
+
+> **Not active in the zero-cost profile (ADR-023).** The Claude adapter plugs into the `LlmProvider` interface from the `llm-integration` skill. Shared rules (PII redaction, evidence guards, budgets, versioned prompts) come from that skill.
 
 # Claude AI Integration
 

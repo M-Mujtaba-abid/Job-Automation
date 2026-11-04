@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Build/typecheck need no real secrets: env validation is lazy. Never put real secrets here.
+      NEXT_TELEMETRY_DISABLED: "1"
+      # drizzle.config.ts requires a URL to load; `drizzle-kit check` never connects.
+      DATABASE_URL_UNPOOLED: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck (all code)
+        run: npm run typecheck
+
+      - name: Typecheck (strict, v2 code)
+        run: npm run typecheck:strict
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Migration snapshot consistency
+        run: npm run db:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Dependency audit (production deps, high+)
+        run: npm audit --omit=dev --audit-level=high
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

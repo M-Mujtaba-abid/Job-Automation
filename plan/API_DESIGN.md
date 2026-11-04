@@ -6,7 +6,7 @@
 > **Active profile: zero-cost (ADR-023). Contract differences:**
 > - **Sign-in:** Google only at launch. Email/password, verification and reset endpoints in §2 are not enabled until a free email channel exists.
 > - **Resume upload** (§4): file bytes go to `ResumeFile` (Postgres). Download streams the bytes from a Route Handler after the ownership check (no presigned URLs).
-> - **Background work:** `GET /api/cron/drain` (Bearer `CRON_SECRET`, called by cron-job.org every 5–15 min and once a day by Vercel cron) claims `BackgroundJob` rows and runs them for ≤ 45 s, returning `{ processed, remaining, deferred }`. `GET /api/cron/reconcile` (§5) is merged into drain + daily maintenance.
+> - **Background work:** `GET /api/cron/drain` (Bearer `CRON_SECRET`, called by cron-job.org **every 30 min by default** (configurable) and once a day by Vercel cron) claims `BackgroundJob` rows and runs them for at most **`DRAIN_TIME_BUDGET_MS` = 20 000 ms**, then returns `{ processed, remaining, deferred }` with status 200 within ~20 s. cron-job.org times out after 30 s and disables a job after more than 25 consecutive failures. Remaining work may continue via `after()` within the Vercel function limit without delaying the response. User-triggered work is kicked by `after()` in the triggering action, not by the cron (Neon compute budget, ADR-023). `GET /api/cron/reconcile` (§5) is merged into drain + daily maintenance.
 > - **Mail** (§11): Gmail only; Microsoft Graph and push webhooks are deferred. Reply tracking is out of scope in this profile.
 > - **Automation** (§12): `automation.start` is available to the owner only (local runner). Other users get `automation.manualFallback`.
 > - **Billing** (§14) and plan limits (§15): not implemented. Every user gets the "Free beta" limits, set from free AI quotas (config).
@@ -75,12 +75,12 @@ Better Auth mounts its own handler at `app/api/auth/[...all]/route.ts`. We do no
 
 | Operation | Endpoint / action | Notes |
 |---|---|---|
-| Sign up (email/password) | `POST /api/auth/sign-up/email` | password policy: ≥ 10 chars, breached-password check (HIBP k-anonymity) ; rate limit 5/min/IP |
-| Sign in | `POST /api/auth/sign-in/email` | rate limit 10/min/IP + 5/min/email; generic error message |
-| OAuth sign-in | `GET /api/auth/sign-in/social?provider=google|microsoft` → callback | PKCE + state |
+| Sign up (email/password) **[scale profile / not enabled in zero-cost]** | `POST /api/auth/sign-up/email` | password policy: ≥ 10 chars, breached-password check (HIBP k-anonymity) ; rate limit 5/min/IP |
+| Sign in (email/password) **[scale profile / not enabled in zero-cost]** | `POST /api/auth/sign-in/email` | rate limit 10/min/IP + 5/min/email; generic error message |
+| OAuth sign-in | `GET /api/auth/sign-in/social?provider=google|microsoft` → callback | PKCE + state. **Zero-cost: `provider=google` only; `microsoft` is scale profile / not enabled in zero-cost** |
 | Sign out | `POST /api/auth/sign-out` | revokes session row |
-| Verify email | `GET /api/auth/verify-email?token=` | single-use, 24 h |
-| Password reset | `POST /api/auth/forget-password`, `POST /api/auth/reset-password` | always 200 (no enumeration); token 1 h; revokes all sessions |
+| Verify email **[scale profile / not enabled in zero-cost]** | `GET /api/auth/verify-email?token=` | single-use, 24 h |
+| Password reset **[scale profile / not enabled in zero-cost]** | `POST /api/auth/forget-password`, `POST /api/auth/reset-password` | always 200 (no enumeration); token 1 h; revokes all sessions |
 | Sessions list / revoke | actions `account.listSessions`, `account.revokeSession({sessionId})` | |
 | 2FA (TOTP) | Better Auth two-factor plugin endpoints | optional, M12 required for admins |
 | Accept terms | action `account.acceptConsents({ kinds: ConsentKind[], versions })` | writes `UserConsent` |
@@ -125,7 +125,7 @@ Side effect: changes to matching-relevant fields enqueue `match {userId, reason:
 | `jobs.reportListing` | `{ jobId, reason: SCAM|EXPIRED|DUPLICATE|OTHER }` → admin queue |
 | Admin `sources.*` | `create/update/enable/disable/runNow` with `complianceStatus` gate: `runNow` → `PRECONDITION_FAILED` unless `APPROVED` |
 | Webhook `POST /api/webhooks/apify` (legacy) | header `X-Webhook-Signature` HMAC (replaces v1 query-string secret); body ignored; run status re-read from Apify API (v1 behaviour kept) |
-| Cron `GET /api/cron/reconcile` | `Authorization: Bearer CRON_SECRET`; re-enqueues stale `*_PENDING` work (fallback if workers/Redis lost jobs) |
+| Cron `GET /api/cron/reconcile` **[scale profile / not enabled in zero-cost]** | `Authorization: Bearer CRON_SECRET`; re-enqueues stale `*_PENDING` work (fallback if workers/Redis lost jobs). Zero-cost: merged into `/api/cron/drain` + the daily maintenance job |
 
 ## 6. Job matching
 

@@ -1,6 +1,6 @@
 # AI Matching Design
 
-> **Active profile: zero-cost (ADR-023).** LLM calls go through the `LlmProvider` interface: **Gemini API free tier (primary), Groq free tier (fallback)**. Embeddings come from a **Gemini embedding model at 768 dimensions, stored as `halfvec(768)`**. Before any LLM call, resume text is **PII-redacted** (names, emails, phones, addresses, profile URLs replaced with placeholders). Wherever this document says "Claude", read "the configured `LlmProvider`". The scoring algorithm (§5) is unchanged: it is deterministic, so matching keeps working when free AI quota is exhausted.
+> **Active profile: zero-cost (ADR-023).** LLM calls go through the `LlmProvider` interface: **Gemini API free tier (primary), Groq free tier (fallback)**. Embeddings come from a **Gemini embedding model at 768 dimensions, stored as `halfvec(768)`**. Before any LLM call, resume text is **PII-redacted** (names, emails, phones, addresses, profile URLs replaced with placeholders). Wherever this document says "Claude", read "the configured `LlmProvider`". **Open owner decision (ADR-023 "Provider data-routing"):** Gemini's free-tier terms forbid personal information and EEA/UK/Swiss users. The recommended default, not yet applied, is Gemini only for public data (job descriptions, job and title/skill embeddings) and resume parsing on Groq with Zero Data Retention or deterministic-only. The scoring algorithm (§5) is unchanged: it is deterministic, so matching keeps working when free AI quota is exhausted.
 
 > Principle (ADR-013): **the score is computed, not generated.** Deterministic, versioned components produce the base score; the LLM may adjust it within ±10 points for shortlisted jobs and must justify the adjustment with evidence. Every number shown to a user can be traced to a breakdown stored on `JobMatch.breakdown`.
 
@@ -115,10 +115,14 @@ Merge policy: deterministic values win when present and valid (they are cheaper 
 ## 4. Embeddings & semantic retrieval
 
 - **Provider:** zero-cost profile: Gemini embedding model via the free tier, `outputDimensionality = 768`, column `halfvec(768)` (≈1.5 KB/vector, fits the Neon Free budget). Scale profile: Voyage AI (ADR-010). Exact model chosen in M4 by eval; changing model or dimension = new column + backfill.
+- **Model choice must be fixed before M4 starts** (owner + `ai-engineer`; facts from `docs/setup/free-tier-limits.md`, checked 2026-11-04). The two candidates behave differently:
+  - `gemini-embedding-001` supports `taskType` (`RETRIEVAL_DOCUMENT` / `RETRIEVAL_QUERY`). At reduced dimensions such as 768 its vectors are **not normalised**: the adapter must L2-normalise every vector before storing or querying it.
+  - `gemini-embedding-2` (recommended in Google's embeddings guide) takes **no `taskType`**, so the asymmetric query/document bullet below does not apply. It normalises its own output at any `outputDimensionality`.
+  - Vectors from different models are **not comparable**. Switching models means re-embedding every job and profile (new `embeddingModel` value, full backfill, no mixed comparisons). `EMBEDDING_MODEL` and `EMBEDDING_DIM=768` stay fixed once M4 ships. The adapter asserts unit norm (|‖v‖ − 1| < 1e-3) in tests for whichever model is chosen.
 - **Quota handling:** each job is embedded once (global catalog); embedding jobs are batched and low priority; if the daily embedding quota is exhausted, matching runs keyword/skill-only (`JobMatch.degraded = true`) and re-scores later.
 - **Job document:** `normalizedTitle + seniority + required skills + top responsibilities + location/workMode` (≤ 512 tokens; boilerplate like EEO statements removed).
-- **Candidate document:** `headline + target titles + top 25 confirmed skills (by years) + last 3 positions (title, highlights)`.
-- Asymmetric input types (`query` for candidate, `document` for jobs) if the provider supports them.
+- **Candidate document:** `headline + target titles + top 25 confirmed skills (by years) + last 3 positions (title, highlights)`. *Pending the owner decision in ADR-023 "Provider data-routing" (OPEN):* if the recommendation is accepted, the candidate document sent to the Gemini free tier is reduced to **target titles + normalised skill list**, with no free-text headline or highlights, because those come from the resume.
+- Asymmetric input types (`query` for candidate, `document` for jobs) if the provider supports them (`gemini-embedding-001` does via `taskType`; `gemini-embedding-2` does not).
 - **Index:** HNSW cosine on active jobs (DATABASE_DESIGN §6). Retrieval: `ORDER BY embedding <=> $1 LIMIT 500` after hard filters.
 - **Re-embedding triggers:** resume re-parse, confirmed-skill edits, target-title changes (debounced 60 s), embedding model upgrade (background backfill, `embeddingModel` column tracks provenance).
 

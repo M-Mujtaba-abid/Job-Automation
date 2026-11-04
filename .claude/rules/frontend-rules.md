@@ -3,8 +3,7 @@ paths:
   - "src/app/**/*.{ts,tsx,css}"
   - "src/components/**/*.{ts,tsx}"
   - "src/features/**/*.{ts,tsx}"
-  - "app/**/*.{ts,tsx,css}"
-  - "components/**/*.{ts,tsx}"
+  - "src/legacy/**/*.{ts,tsx}"
 ---
 
 # Frontend Rules
@@ -14,7 +13,7 @@ Design reference: `plan/UI_UX_DESIGN.md`. Skill: `.claude/skills/nextjs-app-rout
 ## Server vs Client Components
 - Default to Server Components. Add `"use client"` only for interactivity (state, effects, event handlers, browser APIs), and push it to the smallest leaf component.
 - Server Components fetch data by calling module services (`@/server/modules/<domain>`). Never call our own Route Handlers from Server Components.
-- Client Components never import from `@/server/**` (ESLint enforced). Pass serialisable props only, never Prisma objects with Decimal/Date surprises. Map to DTOs.
+- Client Components never import from `@/server/**` (ESLint enforced). Pass serialisable props only, never Drizzle rows (`Date` objects, `numeric` as strings, internal columns). Map to DTOs.
 - Request APIs are async in this Next version: `await params`, `await searchParams`, `await cookies()`, `await headers()`. Verify in `node_modules/next/dist/docs/` when unsure.
 
 ## Data, caching, and state

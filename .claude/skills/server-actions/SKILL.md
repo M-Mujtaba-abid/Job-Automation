@@ -139,7 +139,7 @@ function onDrop(move: Move) {
 - ❌ Reading `userId` (or any tenant id) from input.
 - ❌ Skipping Zod because "the form already validates".
 - ❌ Throwing errors to the client or returning `err.message` for unexpected errors.
-- ❌ Calling Prisma directly in the action.
+- ❌ Calling `db` (Drizzle) directly in the action.
 - ❌ Doing slow external calls (LLM, email, ATS) inside the action: enqueue instead.
 - ❌ Using actions for data fetching in Server Components (call services directly).
 - ❌ Relying on closure-captured or `.bind()` arguments as trusted: bound args arrive from the client; validate them like any input.

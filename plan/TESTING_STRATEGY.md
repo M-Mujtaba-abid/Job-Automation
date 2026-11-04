@@ -33,7 +33,7 @@ Overall coverage gate: ≥ 80% lines on `src/server/**` (M12 target; ratchet up 
 
 ## 3. Integration testing
 ### 3.1 Environment
-- Postgres 16 + pgvector via Testcontainers locally/CI (`pgvector/pgvector:pg16` image); migrations applied once per run; each test file runs inside a transaction rolled back after each test, or uses a unique schema.
+- Real Postgres 16 + pgvector only (never a mocked `db`): a local Docker container (`pgvector/pgvector:pg16`, via Docker Compose or Testcontainers) or a disposable **Neon dev branch** in CI. `drizzle-kit migrate` applies all migrations once per run (creating schema `app`). Each test runs inside a transaction that is rolled back afterwards; tests that need committed data (concurrency, `SKIP LOCKED`) clean up their own rows. v2 tables are fixed to schema `app` (ADR-024), so isolation is per database or branch, not per schema.
 - Redis via Testcontainers; BullMQ queues namespaced per test run.
 - Object storage via MinIO container.
 - External HTTP (Anthropic, Voyage, job sources, Gmail/Graph, billing) mocked with **MSW**; Anthropic responses are **recorded fixtures** of real structured outputs (sanitised) to keep schema realism.
@@ -44,7 +44,7 @@ Overall coverage gate: ≥ 80% lines on `src/server/**` (M12 target; ratchet up 
 - Raw SQL (vector repository, `SKIP LOCKED` claims, partial unique indexes): tested against real Postgres only.
 
 ### 3.3 Tenant isolation suite (mandatory)
-For every tenant-owned model, a generated test matrix: create resource as user A, then as user B attempt read/list/update/delete via each action → expect `NOT_FOUND` and no mutation. New models must be registered in `tests/integration/tenancy/registry.ts`; a meta-test fails if a Prisma model with a `userId` field is missing from the registry.
+For every tenant-owned model, a generated test matrix: create resource as user A, then as user B attempt read/list/update/delete via each action → expect `NOT_FOUND` and no mutation. New models must be registered in `tests/integration/tenancy/registry.ts`; a meta-test enumerates all Drizzle tables exported from `src/server/db/schema/index.ts` (via `getTableConfig()`, schema `app`) and fails if a table with a `userId` (`user_id`) column is missing from the registry.
 
 ## 4. API testing (Server Actions & Route Handlers)
 - Actions are invoked directly as functions in tests with a mocked session provider (the `authedAction` wrapper reads session via an injectable `getSession`).
@@ -121,7 +121,7 @@ For every tenant-owned model, a generated test matrix: create resource as user A
 |---|---|---|
 | Secrets scanning | gitleaks (pre-commit + CI) | every commit |
 | Dependency vulnerabilities | `npm audit --omit=dev`, OSV-Scanner, Renovate/Dependabot | every PR + daily |
-| SAST | Semgrep (TypeScript + Next.js rulesets, custom rules: `$queryRawUnsafe`, `dangerouslySetInnerHTML`, missing `authedAction`) | every PR |
+| SAST | Semgrep (TypeScript + Next.js rulesets, custom rules: `sql.raw(` with non-literal argument, `db` imported outside `src/server/db/**` and repositories, `dangerouslySetInnerHTML`, missing `authedAction`) | every PR |
 | Container scanning | Trivy on worker images | on image build |
 | DAST | OWASP ZAP baseline against preview deploy | nightly + pre-release |
 | AuthZ suite | tenant isolation tests (§3.3), role tests | every PR |
@@ -144,7 +144,7 @@ For every tenant-owned model, a generated test matrix: create resource as user A
 - Flaky-test policy: a flaky test is quarantined (tagged `@flaky`, tracked issue) within 24 h and fixed within a week; quarantine count reported weekly; no silent retries beyond Playwright's `retries: 1` in CI.
 
 ## 10. Test data & environments
-- Seeds: `prisma/seed.ts` (taxonomy, plans, demo users with synthetic resumes), deterministic via fixed RNG seed.
+- Seeds: `src/server/db/seed.ts` (Drizzle; taxonomy, plans, demo users with synthetic resumes), deterministic via fixed RNG seed.
 - Never use real candidate resumes in tests or evals without explicit written consent; prefer synthetic resumes generated and then human-reviewed.
 - Preview environments use Neon branches seeded with synthetic data; production data is never copied to lower environments.
 

@@ -19,7 +19,7 @@ You are the independent security reviewer. You find vulnerabilities and privacy 
 - Review upload validation, SSRF guards, webhook verification, CSRF/Origin checks, CSP/headers.
 - Review LLM usage for prompt-injection exposure, excessive agency, data minimisation.
 - Review automation for compliance rules (no evasion, approval binding, no retry after submit).
-- Run read-only tooling: `npm audit --omit=dev`, `npx gitleaks detect` (if installed), Semgrep (if installed), grep for banned patterns (`$queryRawUnsafe`, `dangerouslySetInnerHTML`, `process.env` outside env modules, secrets in URLs).
+- Run read-only tooling: `npm audit --omit=dev`, `npx gitleaks detect` (if installed), Semgrep (if installed), grep for banned patterns (`sql.raw(` with non-literal input, `db` imported outside `src/server/db/**`/repositories, `dangerouslySetInnerHTML`, `process.env` outside env modules, secrets in URLs).
 - Milestone sign-offs (M1, M2, M8, M9, M11, M12) recorded in `plan/IMPLEMENTATION_STATUS.md` notes by the requesting agent.
 - Maintain the v1 findings table (SECURITY_DESIGN §15) status.
 
