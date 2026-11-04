@@ -16,7 +16,8 @@ const schema = z.object({
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 
   // M1+
-  BETTER_AUTH_SECRET: z.string().min(32).optional(),
+  BETTER_AUTH_SECRET: z.string().min(32, "BETTER_AUTH_SECRET must be at least 32 characters").optional(),
+  BETTER_AUTH_URL: z.url().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   // M2+ (free AI tiers)

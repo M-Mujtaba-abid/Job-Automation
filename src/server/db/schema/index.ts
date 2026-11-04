@@ -2,3 +2,5 @@
 // `app` must be exported so drizzle-kit emits CREATE SCHEMA "app".
 export { app } from "./_shared";
 export * from "./platform";
+export * from "./identity";
+export * from "./profile";

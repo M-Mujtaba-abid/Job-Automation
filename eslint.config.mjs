@@ -12,7 +12,7 @@ const noServerFromShared = {
 };
 const noDbOutsideRepos = {
   group: ["@/server/db/client"],
-  message: "Import the db client only in src/server/db/**, repository files, or the queue/rate-limit adapters.",
+  message: "Import the db client only in src/server/db/**, repository files, or the queue/rate-limit/auth adapters.",
 };
 const noSqlRaw = {
   selector: "CallExpression[callee.type='MemberExpression'][callee.object.name='sql'][callee.property.name='raw']",
@@ -40,7 +40,7 @@ const config = [
   },
   {
     // Infrastructure adapters that own SQL: db layer, repositories, Postgres queue and rate limiter.
-    files: ["src/server/db/**/*.ts", "src/server/**/repository.ts", "src/server/**/*-repository.ts", "src/server/jobs/pg-queue.ts", "src/server/lib/rate-limit.ts"],
+    files: ["src/server/db/**/*.ts", "src/server/**/repository.ts", "src/server/**/*-repository.ts", "src/server/jobs/pg-queue.ts", "src/server/lib/rate-limit.ts", "src/server/auth/auth.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [noLegacy] }],
     },

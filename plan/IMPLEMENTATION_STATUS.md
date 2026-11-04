@@ -28,7 +28,7 @@
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 Project Foundation | IN PROGRESS | Tasks 1–4, 6, 9, 10 completed; remaining: Docker run check (5), Sentry DSN (7), first GitHub CI run (8). Not blocking M1 |
-| M1 Authentication & User Management | NOT STARTED | Depends on M0; auth provider confirmation (ADR-005) |
+| M1 Authentication & User Management | IN PROGRESS | Slice 1 done: Better Auth (Google-only) on `app` schema, sessions, wrappers, /sign-in + /account. Remaining: live Google sign-in (needs owner's OAuth keys), onboarding, profile settings, consents, deletion, security review (tracker below) |
 | M2 Resume Upload & AI Parsing | NOT STARTED | |
 | M3 Job Aggregation | NOT STARTED | Source licences/terms review needed per source (ADR-011) |
 | M4 AI Job Matching | NOT STARTED | Embeddings model selection eval |
@@ -56,6 +56,20 @@
 | 9 | `BackgroundJob` queue + `/api/cron/drain` + `after()` kick + cron-job.org + `free-tier-limits.md` | COMPLETED | Postgres `JobQueue` (SKIP LOCKED claim, retry/backoff, defer, dedupe, stale release, prune), time-boxed `drain()`, daily maintenance handler, `kickDrain()` via `after()`, `GET /api/cron/drain` (401 without/with wrong secret, smoke-tested), Vercel daily backstop cron, `docs/setup/free-tier-limits.md`. Verified: 7 unit tests + **5 integration tests against real Neon** (`npm run test:integration`: dedupe, priority, 4 concurrent claimers never share a job, retry→DEAD, defer, stale release). **Owner action:** create the cron-job.org job (every 30 min) per `docs/setup/third-party-accounts.md` |
 | 10 | Provider seams with fakes (`LlmProvider` Gemini/Groq, `EmbeddingProvider`, `FileStore`, `RateLimiter`, `Mailer`) | COMPLETED | LLM + embeddings (live-verified with owner's keys, data-routing policy enforced), `RateLimiter` (Postgres, integration-tested), `FileStore` + `Mailer` interfaces with memory/no-op adapters and tests (real adapters: Postgres file store in M2, Gmail in M8) |
 | — | Security: dependency vulnerabilities | COMPLETED | `npm audit` found **critical** Next.js 16.3.8 RCE (GHSA-2464-fhr4-w9xw etc.), high Zod, moderate Nodemailer. Upgraded to next 16.4.5, zod 4.6.7, nodemailer 10.3.1 (floors raised in package.json); prod audit now 0. **The live v1 deployment stays vulnerable until this is deployed.** 20 moderate dev-only advisories remain (esbuild via drizzle-kit, minimatch): not shipped, need breaking upgrades |
+
+### M1 task tracker
+| # | Task | Status | Evidence / notes |
+|---|---|---|---|
+| 1 | Identity schema: `app.users/sessions/accounts/verifications` (Better Auth 1.7 columns) + `user_profiles`, `user_consents`, `audit_logs` | COMPLETED | Migration `0003_app_identity_profile` **applied to main Neon on 2026-11-04 with owner approval** (v1 tables untouched); `db:check` passes |
+| 2 | Better Auth config (Google only, DB sessions 30 d sliding, freshAge 12 h, OAuth tokens encrypted, uuidv7 ids, sign-up/sign-in hooks → profile row + audit) | COMPLETED | `src/server/auth/*`; option names verified against installed better-auth 1.7.16 types; **2 integration tests on real Neon** (test-only email/password method sharing the production options): uuidv7 ids, hooks create profile + `auth.user.created`/`auth.login` audit rows, session cookie resolves, DB revocation signs out, user deletion cascades |
+| 3 | `requireUser`/`getTenantContext`/`requireAdmin` + `authedAction` + `route()` wrappers (moved from M0 task 7) | COMPLETED | 8 unit tests (UNAUTHENTICATED, Zod field errors incl. FormData, per-user rate-limit key, masked INTERNAL errors, RATE_LIMITED retry hint, 401/400/500 JSON shape, cron mode) |
+| 4 | Proxy: Better Auth endpoints public, v2 pages (`/onboarding`, `/account`, `/dashboard`) guarded by the v2 session cookie, v1 unchanged | COMPLETED | Build lists `/api/auth/[...all]` beside v1 `/api/auth/login|logout`; open-redirect guard `safeNextPath` unit-tested |
+| 5 | `/sign-in` (Continue with Google) + minimal `/account` (name, email, sign out) | IN PROGRESS | Pages build. **Not verified live:** needs `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_SECRET` (owner) |
+| 6 | Onboarding steps 1 & 3 (goals, preferences) + profile settings | NOT STARTED | |
+| 7 | Consent capture (Terms/Privacy versions) + sign-up gating for EEA/UK/CH (ADR-023) | NOT STARTED | |
+| 8 | Account deletion (7-day grace, purge job) + sessions list/revoke | NOT STARTED | |
+| 9 | E2E (Playwright) + axe for auth pages | NOT STARTED | |
+| 10 | Security-auditor sign-off (mandatory for M1) | NOT STARTED | |
 
 ## Existing v1 functionality (legacy, not part of v2 status)
 v1 features (Apify ingest, contact extraction, bulk email, WhatsApp/Form links, tracking) exist in code at the repo root. **Not re-verified in this session:** `node_modules` is incomplete, so `npm test`/`build` were not run. Verification is M0 task 2.
@@ -85,6 +99,7 @@ See `TECHNICAL_DECISIONS.md` → "Open questions". Resolved: hosting, database, 
 | Date | Change |
 |---|---|
 | 2026-11-04 | Initialization phase: Part A completed and verified; all application milestones NOT STARTED |
+| 2026-11-04 | M1 slice 1: Better Auth on app schema (migration 0003 applied, owner-approved), session helpers + action/route wrappers, /sign-in + /account, 2 auth integration tests |
 | 2026-11-04 | M0: pushed `e18555d`; fixed queue clock-skew bug (DB clock for all timing, found by integration tests); Postgres rate limiter; FileStore/Mailer seams; Prettier; docker-compose; local-development guide |
 | 2026-11-04 | M0: migration 0002 applied to Neon (owner-approved), queue integration-tested on real Postgres, AI layer live-verified (Gemini + Groq + embeddings), data routing decided (personal → Groq) |
 | 2026-11-04 | M0 started: tasks 1–3 and 6 completed, security upgrade of next/zod/nodemailer, v2 foundation (queue, drain, env, errors, logger, headers, CI) in progress (see tracker) |
