@@ -28,7 +28,7 @@
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 Project Foundation | IN PROGRESS | Tasks 1–4, 6, 9, 10 completed; remaining: Docker run check (5), Sentry DSN (7), first GitHub CI run (8). Not blocking M1 |
-| M1 Authentication & User Management | IN PROGRESS | Slice 1 done: Better Auth (Google-only) on `app` schema, sessions, wrappers, /sign-in + /account. Remaining: live Google sign-in (needs owner's OAuth keys), onboarding, profile settings, consents, deletion, security review (tracker below) |
+| M1 Authentication & User Management | IN PROGRESS (paused by owner 2026-11-06: job finding first) | Slice 1 done: Better Auth (Google-only) on `app` schema, sessions, wrappers, /sign-in + /account. Remaining: live Google sign-in (needs owner's OAuth keys), onboarding, profile settings, consents, deletion, security review (tracker below) |
 | M2 Resume Upload & AI Parsing | NOT STARTED | |
 | M3 Job Aggregation | NOT STARTED | Source licences/terms review needed per source (ADR-011) |
 | M4 AI Job Matching | NOT STARTED | Embeddings model selection eval |
@@ -98,6 +98,7 @@ See `TECHNICAL_DECISIONS.md` → "Open questions". Resolved: hosting, database, 
 ## Change log
 | Date | Change |
 |---|---|
+| 2026-11-06 | Owner reprioritised: getting jobs fetched and shown comes first; M1 (Google sign-in etc.) paused, plans unchanged. v1 fetch checked: LinkedIn run ingested 14 new jobs (27 total). Facebook source still has the seed placeholder group URL (`REPLACE_WITH_GROUP_ID`), so Apify returns `not_available`; needs a real public group URL from the owner. Stuck Facebook run closed as failed (data fix, no code change) |
 | 2026-11-04 | Initialization phase: Part A completed and verified; all application milestones NOT STARTED |
 | 2026-11-04 | M1 slice 1: Better Auth on app schema (migration 0003 applied, owner-approved), session helpers + action/route wrappers, /sign-in + /account, 2 auth integration tests |
 | 2026-11-04 | M0: pushed `e18555d`; fixed queue clock-skew bug (DB clock for all timing, found by integration tests); Postgres rate limiter; FileStore/Mailer seams; Prettier; docker-compose; local-development guide |
